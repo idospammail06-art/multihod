@@ -1,0 +1,76 @@
+<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0305" />
+<title>החתמות מולטימדיה</title>
+
+<!-- ===== CDN dependencies (no build step) ===== -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=Rubik:wght@500;600;700;800&display=swap" rel="stylesheet">
+<script>
+/* ---- boot guard: silence the Tailwind dev notice + capture any load/runtime error
+        so the app can never fail to a silent black screen ---- */
+window.__bootErrors = [];
+window.addEventListener('error', function(e){
+  var t = e.target || {};
+  if (t.src || t.href) window.__bootErrors.push('נכשלה טעינה של: ' + (t.src || t.href));
+  else if (e.message) window.__bootErrors.push(e.message);
+}, true);
+(function(){
+  var mute = ['cdn.tailwindcss.com','in-browser Babel','babeljs.io'];
+  var filter = function(fn){ return function(){ var m = arguments[0];
+    if (typeof m === 'string'){ for (var i=0;i<mute.length;i++){ if (m.indexOf(mute[i]) > -1) return; } }
+    return fn.apply(console, arguments); }; };
+  console.warn = filter(console.warn);
+  console.log  = filter(console.log);
+})();
+window.addEventListener('load', function(){
+  setTimeout(function(){
+    var root = document.getElementById('root');
+    if (!root || root.getAttribute('data-mounted') === '1') return;
+    var miss = [];
+    if (!window.React) miss.push('React');
+    if (!window.ReactDOM) miss.push('ReactDOM');
+    if (!window.Babel) miss.push('Babel');
+    if (!window.QRCode) miss.push('QRCode');
+    if (typeof window.XLSX === 'undefined') miss.push('XLSX');
+    if (miss.length === 0 && window.__bootErrors.length === 0) return;
+    root.innerHTML =
+      '<div dir="rtl" style="max-width:540px;margin:12vh auto;padding:26px;font-family:Heebo,Arial,sans-serif;'
+      + 'color:#eaeefb;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:22px;line-height:1.75">'
+      + '<h2 style="margin:0 0 10px;font-size:20px">האפליקציה לא נטענה במלואה</h2>'
+      + (miss.length ? '<p>ספריות שלא נטענו מהרשת: <b style="color:#fcd34d">' + miss.join(', ') + '</b></p>' : '')
+      + (window.__bootErrors.length ? '<pre style="white-space:pre-wrap;font-size:12px;color:#fca5a5;margin:8px 0 0">' + window.__bootErrors.join('\n') + '</pre>' : '')
+      + '<p style="font-size:13px;color:#9aa6bd;margin-top:14px">כמעט תמיד זה אומר שהרשת חוסמת גישה לשרת חיצוני, או שהאתר נפתח ישירות מהמחשב (file://) במקום משרת אמיתי. '
+      + 'צלם/י מסך של ההודעה הזו ושלח/י לי — זה מראה בדיוק מה חסום ואני מתקן בהתאם.</p></div>';
+  }, 4000);
+});
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs@master/qrcode.min.js"></script>
+
+<script>
+tailwind.config = {
+  theme: { extend: {
+    fontFamily: { sans: ['Heebo','system-ui','-apple-system','sans-serif'], num:['Rubik','Heebo','sans-serif'] },
+    colors: { ink:'#1a0810', brass:'#a83358', brass2:'#6e1c38', cyan:'#e0655a' }
+  }}
+}
+</script>
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#9aa6bd;font-family:Heebo,Arial,sans-serif">טוען…</div></div>
+<div id="print-area"></div>
+
+<script type="text/babel" data-presets="react" src="script.js"></script>
+</body>
+</html>
