@@ -196,6 +196,22 @@ const fmtDate  = d => d ? new Date(d).toLocaleDateString('he-IL') : '—';
 const fmtDT    = d => d ? new Date(d).toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'}) : '—';
 const money    = n => (n==null||n==='') ? '—' : '₪' + Number(n).toLocaleString('he-IL');
 const itemLabel = i => i?.equipment?.name ? (i.equipment.name + (i.camera_number ? ` (מצלמה מס' ${i.camera_number})` : '')) : null;
+/* Normalizes an Israeli or already-international phone number to a direct
+   WhatsApp chat link (wa.me expects digits only, no plus/spaces/dashes). */
+const waLink = (phone) => {
+  if(!phone) return null;
+  let digits = String(phone).replace(/[^\d+]/g,'');
+  if(!digits) return null;
+  if(digits.startsWith('+')) digits = digits.slice(1);
+  else if(digits.startsWith('0')) digits = '972' + digits.slice(1);
+  else if(!digits.startsWith('972')) digits = '972' + digits;
+  return `https://wa.me/${digits}`;
+};
+const PhoneLink = ({phone,className}) => {
+  const href = waLink(phone);
+  if(!href) return <>—</>;
+  return <a href={href} target="_blank" rel="noreferrer" dir="ltr" className={cx('text-emerald-300 underline decoration-dotted underline-offset-2 transition hover:text-emerald-200',className)}>{phone}</a>;
+};
 /* ===== single source of truth for "is this loan overdue right now" =====
    Built from the browser's LOCAL wall-clock time (new Date(y,m,d,h,min) always
    uses local time, never UTC) — since every real user of this app is physically
@@ -696,9 +712,10 @@ function TrendCharts({data}){
     </div>
   );
 }
-function BorrowDetail({borrow,onClose,onApproved,canApprove,onReturned}){
+function BorrowDetail({borrow,onClose,onApproved,onRejected,canApprove,onReturned}){
   const toast = useToast(); const {profile} = useAuth();
   const [busy,setBusy] = useState(false);
+  const [rejecting,setRejecting] = useState(false);
   const [returning,setReturning] = useState(false);
   const sigUrl = borrow.signature_path ? sb.storage.from('signatures').getPublicUrl(borrow.signature_path).data.publicUrl : null;
   const returnPhotoUrls = (borrow.return_photos||[]).map(p=>sb.storage.from('return-photos').getPublicUrl(p).data.publicUrl);
@@ -711,13 +728,25 @@ function BorrowDetail({borrow,onClose,onApproved,canApprove,onReturned}){
     if(error) return toast('שגיאה באישור: '+rpcErrorText(error),'error');
     toast('הטופס אושר','success'); onApproved && onApproved();
   };
+  const reject = async () => {
+    setRejecting(true);
+    const {error} = await sb.from('borrows').update({status:'cancelled'}).eq('id',borrow.id);
+    if(!error){
+      try{ await sb.from('audit_log').insert({action:'REJECT',entity_type:'borrows',entity_id:borrow.id,actor_name:profile?.full_name||'מנהל'}); }catch(_){}
+    }
+    setRejecting(false);
+    if(error) return toast('שגיאה בדחייה: '+rpcErrorText(error),'error');
+    toast('הבקשה נדחתה','success'); onRejected && onRejected();
+  };
   return (
     <div className="space-y-4">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-2xl bg-white/5 p-4 text-sm sm:grid-cols-3">
         {[['שם מלא',borrow.full_name],['מספר אישי',borrow.personal_number],['יחידה / מחלקה',borrow.unit],['טלפון',borrow.phone],
           ['תאריך ההשאלה',fmtDate(borrow.checkout_date)],['שעת ההשאלה',borrow.checkout_time?.slice(0,5)],
           ['תאריך ההחזרה שנקבע',fmtDate(borrow.expected_return_date)],['שעת ההחזרה שנקבעה',borrow.expected_return_time?.slice(0,5)]].map(([k,v])=>(
-          <div key={k}><dt className="text-xs text-slate-500">{k}</dt><dd className="font-medium text-slate-100">{v||'—'}</dd></div>
+          <div key={k}><dt className="text-xs text-slate-500">{k}</dt>
+            <dd className="font-medium text-slate-100">{k==='טלפון' ? <PhoneLink phone={v}/> : (v||'—')}</dd>
+          </div>
         ))}
       </dl>
       {borrow.purpose && <div className="rounded-2xl border border-white/10 p-3 text-sm text-slate-200"><span className="text-xs text-slate-500">מטרת ההשאלה</span><p>{borrow.purpose}</p></div>}
@@ -763,8 +792,10 @@ function BorrowDetail({borrow,onClose,onApproved,canApprove,onReturned}){
         <Btn variant="ghost" onClick={onClose}>סגירה</Btn>
         {canReturn &&
           <Btn variant="brass" onClick={()=>setReturning(true)}><IconIn size={16}/> קליטת החזרה</Btn>}
-        {canApprove && !borrow.approved &&
-          <Btn variant="brass" onClick={approve} disabled={busy}><IconCheck size={16}/> {busy?'מאשר…':'אישור הטופס'}</Btn>}
+        {canApprove && !borrow.approved && borrow.status!=='cancelled' && <>
+          <Btn variant="danger" onClick={reject} disabled={rejecting||busy}>{rejecting?'דוחה…':'דחייה'}</Btn>
+          <Btn variant="brass" onClick={approve} disabled={busy||rejecting}><IconCheck size={16}/> {busy?'מאשר…':'אישור הטופס'}</Btn>
+        </>}
       </div>
       <Modal open={returning} onClose={()=>setReturning(false)} title="קליטת החזרת ציוד">
         {returning && <ReturnModal borrow={borrow} onClose={()=>setReturning(false)}
@@ -779,7 +810,7 @@ function PendingApprovals(){
   const load = useCallback(async ()=>{
     const {data} = await sb.from('borrows')
       .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name,serial_number))')
-      .eq('approved',false).order('created_at',{ascending:false});
+      .eq('approved',false).neq('status','cancelled').order('created_at',{ascending:false});
     setRows(data||[]);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -801,7 +832,7 @@ function PendingApprovals(){
         ))}
       </ul>
       <Modal open={!!sel} onClose={()=>setSel(null)} wide title="פרטי טופס החתמה">
-        {sel && <BorrowDetail borrow={sel} canApprove onClose={()=>setSel(null)} onApproved={()=>{setSel(null);load();}} onReturned={()=>{setSel(null);load();}}/>}
+        {sel && <BorrowDetail borrow={sel} canApprove onClose={()=>setSel(null)} onApproved={()=>{setSel(null);load();}} onRejected={()=>{setSel(null);load();}} onReturned={()=>{setSel(null);load();}}/>}
       </Modal>
     </div>
   );
@@ -883,7 +914,7 @@ function Dashboard({go}){
   },[]);
   useEffect(()=>{ load(); const t = setInterval(load,60000); return ()=>clearInterval(t); },[load]);
   if(!s) return <DashSkeleton/>;
-  const actionLabel = a => ({INSERT:'הוספה',UPDATE:'עדכון',DELETE:'מחיקה',BORROW:'השאלה',RETURN:'החזרה',EXTEND:'הארכה',APPROVE:'אישור'}[a]||a);
+  const actionLabel = a => ({INSERT:'הוספה',UPDATE:'עדכון',DELETE:'מחיקה',BORROW:'השאלה',RETURN:'החזרה',EXTEND:'הארכה',APPROVE:'אישור',REJECT:'דחייה'}[a]||a);
   return (
     <div className="space-y-5">
       <PendingApprovals/>
@@ -1654,11 +1685,11 @@ function Employees(){
       <div className="card p-4">
         <div className="relative">
           <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"><IconSearch size={18}/></span>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="חיפוש עובד, מספר אישי, יחידה…" className="input pr-10"/>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="חיפוש חייל, מספר אישי, יחידה…" className="input pr-10"/>
         </div>
       </div>
       {rows===null ? <ListSkeleton/> :
-       filtered.length===0 ? <Empty icon={<IconUsers size={48}/>} title="לא נמצאו עובדים" sub="עדיין לא נרשמו השאלות במערכת."/> :
+       filtered.length===0 ? <Empty icon={<IconUsers size={48}/>} title="לא נמצאו חיילים" sub="עדיין לא נרשמו השאלות במערכת."/> :
        <div className="card overflow-hidden">
          <div className="overflow-x-auto">
            <table className="w-full text-sm">
@@ -1709,7 +1740,7 @@ function AuditLog(){
   const [rows,setRows] = useState(null);
   useEffect(()=>{ sb.from('audit_log').select('*').order('created_at',{ascending:false}).limit(200).then(({data})=>setRows(data||[])); },[]);
   if(rows===null) return <TableSkeleton/>;
-  const A = a=>({INSERT:'הוספה',UPDATE:'עדכון',DELETE:'מחיקה',BORROW:'השאלה',RETURN:'החזרה',EXTEND:'הארכה',APPROVE:'אישור'}[a]||a);
+  const A = a=>({INSERT:'הוספה',UPDATE:'עדכון',DELETE:'מחיקה',BORROW:'השאלה',RETURN:'החזרה',EXTEND:'הארכה',APPROVE:'אישור',REJECT:'דחייה'}[a]||a);
   const E = e=>({equipment:'ציוד',borrows:'השאלה',maintenance:'טיפול'}[e]||e);
   return (
     <div className="card overflow-hidden">
@@ -1839,11 +1870,11 @@ function Shell(){
     {k:'equipment',label:'ציוד',icon:<IconBox/>,show:true},
     {k:'borrow',label:'השאלה',icon:<IconOut/>,show:isStaff},
     {k:'returns',label:'החזרות',icon:<IconIn/>,show:isStaff},
-    {k:'employees',label:'עובדים',icon:<IconUsers/>,show:isStaff},
+    {k:'employees',label:'חיילים',icon:<IconUsers/>,show:isStaff},
     {k:'audit',label:'יומן פעולות',icon:<IconLog/>,show:isStaff},
     {k:'users',label:'ניהול משתמשים',icon:<IconUsers/>,show:isAdmin},
   ].filter(n=>n.show);
-  const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'עובדי היחידה',audit:'יומן פעולות',users:'ניהול משתמשים'};
+  const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'חיילי היחידה',audit:'יומן פעולות',users:'ניהול משתמשים'};
   const NavLinks = () => (
     <nav className="space-y-1.5">
       {nav.map(n=>(
