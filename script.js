@@ -817,8 +817,8 @@ function PendingApprovals(){
   useEffect(()=>{load();},[load]);
   if(!rows || rows.length===0) return null;
   return (
-    <div className="pop rounded-2xl border border-rose-400/30 bg-rose-400/10 p-4">
-      <div className="mb-2 flex items-center gap-2 text-sm font-bold text-rose-200">
+    <div className="pop rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4">
+      <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-200">
         <IconAlert size={18}/> {rows.length} טפסי החתמה ממתינים לאישור מנהל
       </div>
       <ul className="space-y-1.5">
