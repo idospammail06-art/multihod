@@ -1686,11 +1686,11 @@ function Employees(){
       <div className="card p-4">
         <div className="relative">
           <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"><IconSearch size={18}/></span>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="חיפוש חייל, מספר אישי, יחידה…" className="input pr-10"/>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="חיפוש לפי שם, מספר אישי, יחידה…" className="input pr-10"/>
         </div>
       </div>
       {rows===null ? <ListSkeleton/> :
-       filtered.length===0 ? <Empty icon={<IconSoldier size={48}/>} title="לא נמצאו חיילים" sub="עדיין לא נרשמו השאלות במערכת."/> :
+       filtered.length===0 ? <Empty icon={<IconClock size={48}/>} title="לא נמצאה היסטוריית השאלות" sub="עדיין לא נרשמו השאלות במערכת."/> :
        <div className="card overflow-hidden">
          <div className="overflow-x-auto">
            <table className="w-full text-sm">
@@ -1729,6 +1729,91 @@ function Employees(){
       </Modal>
       <Modal open={!!detail} onClose={()=>setDetail(null)} wide title="פרטי השאלה">
         {detail && <BorrowDetail borrow={detail} onClose={()=>setDetail(null)} onReturned={()=>{setDetail(null); loadRows(); if(sel) openHistory(sel);}}/>}
+      </Modal>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SOLDIERS DIRECTORY — reads from profiles, shows every registered user
+   regardless of whether they have any borrows yet.
+   ===================================================================== */
+function Soldiers(){
+  const [rows,setRows] = useState(null);
+  const [q,setQ] = useState('');
+  const [detail,setDetail] = useState(null);
+  const [detailBorrows,setDetailBorrows] = useState(null);
+  const load = useCallback(async () => {
+    const {data} = await sb.from('profiles').select('*').order('full_name');
+    setRows(data||[]);
+  },[]);
+  useEffect(()=>{load();},[load]);
+  const openDetail = async person => {
+    setDetail(person); setDetailBorrows(null);
+    const {data} = await sb.from('borrows')
+      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name))')
+      .eq('personal_number',person.personal_number).order('checkout_date',{ascending:false});
+    setDetailBorrows(data||[]);
+  };
+  const filtered = useMemo(()=>{
+    if(!rows) return [];
+    const t = q.trim().toLowerCase();
+    return rows.filter(r=>!t || [r.full_name,r.personal_number,r.unit].filter(Boolean).join(' ').toLowerCase().includes(t));
+  },[rows,q]);
+  if(rows===null) return <CardsSkeleton/>;
+  return (
+    <div className="space-y-4">
+      <div className="card p-4">
+        <div className="relative">
+          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"><IconSearch size={18}/></span>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="חיפוש לפי שם, מספר אישי, יחידה…" className="input pr-10"/>
+        </div>
+      </div>
+      {filtered.length===0 ? <Empty icon={<IconSoldier size={48}/>} title="לא נמצאו חיילים" sub="אין משתמשים רשומים תואמים לחיפוש."/> :
+        <div className="stagger grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {filtered.map(p=>(
+            <Tilt key={p.id} max={6}>
+              <button onClick={()=>openDetail(p)} className="card lift block w-full p-4 text-right">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="truncate font-semibold text-white">{p.full_name||'—'}</div>
+                  {p.is_primary_admin && <span className="chip shrink-0 border-brass/40 bg-brass/15 text-brass">מנהל ראשי</span>}
+                </div>
+                <div className="truncate text-xs text-slate-400">{p.unit||'—'}</div>
+                <div className="mt-1.5 text-xs text-slate-500">{ROLE_HE[p.role]||p.role||'—'}</div>
+              </button>
+            </Tilt>
+          ))}
+        </div>}
+      <Modal open={!!detail} onClose={()=>setDetail(null)} wide title={detail?`פרטי חייל · ${detail.full_name}`:''}>
+        {detail && (
+          <div className="space-y-4">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-2xl bg-white/5 p-4 text-sm sm:grid-cols-3">
+              {[['שם מלא',detail.full_name],['מספר אישי',detail.personal_number],['יחידה',detail.unit],['טלפון',detail.phone],
+                ['תפקיד',ROLE_HE[detail.role]||detail.role],['נוצר בתאריך',fmtDate(detail.created_at)]].map(([k,v])=>(
+                <div key={k}><dt className="text-xs text-slate-500">{k}</dt>
+                  <dd className="font-medium text-slate-100">{k==='טלפון' ? <PhoneLink phone={v}/> : (v||'—')}</dd>
+                </div>
+              ))}
+            </dl>
+            <div>
+              <span className="mb-2 block text-xs text-slate-500">השאלות ({detailBorrows?detailBorrows.length:0})</span>
+              {detailBorrows===null ? <Spinner/> :
+                detailBorrows.length===0 ? <p className="py-4 text-center text-sm text-slate-500">0 השאלות — משתמש זה עדיין לא ביצע השאלה.</p> :
+                <ul className="space-y-1.5">
+                  {detailBorrows.map(b=>(
+                    <li key={b.id} className="rounded-xl bg-white/5 p-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-200">{b.borrow_items?.map(itemLabel).filter(Boolean).join(' · ')||'—'}</span>
+                        <Badge map={BORROW_STATUS} value={isBorrowOverdue(b)?'overdue':b.status}/>
+                      </div>
+                      <div className="num mt-1 text-xs text-slate-500">{fmtDate(b.checkout_date)} ← {fmtDate(b.expected_return_date)}</div>
+                    </li>
+                  ))}
+                </ul>}
+            </div>
+            <div className="flex justify-end pt-1"><Btn variant="ghost" onClick={()=>setDetail(null)}>סגירה</Btn></div>
+          </div>
+        )}
       </Modal>
     </div>
   );
@@ -1871,11 +1956,12 @@ function Shell(){
     {k:'equipment',label:'ציוד',icon:<IconBox/>,show:true},
     {k:'borrow',label:'השאלה',icon:<IconOut/>,show:isStaff},
     {k:'returns',label:'החזרות',icon:<IconIn/>,show:isStaff},
-    {k:'employees',label:'חיילים',icon:<IconSoldier/>,show:isStaff},
+    {k:'employees',label:'היסטוריית השאלות',icon:<IconClock/>,show:isStaff},
+    {k:'soldiers',label:'חיילים',icon:<IconSoldier/>,show:isStaff},
     {k:'audit',label:'יומן פעולות',icon:<IconLog/>,show:isStaff},
     {k:'users',label:'ניהול משתמשים',icon:<IconUsers/>,show:isAdmin},
   ].filter(n=>n.show);
-  const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'חיילי היחידה',audit:'יומן פעולות',users:'ניהול משתמשים'};
+  const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'היסטוריית השאלות',soldiers:'חיילי היחידה',audit:'יומן פעולות',users:'ניהול משתמשים'};
   const NavLinks = () => (
     <nav className="space-y-1.5">
       {nav.map(n=>(
@@ -1953,6 +2039,7 @@ function Shell(){
             {view==='borrow'     && <Borrow onDone={()=>go('dashboard')}/>}
             {view==='returns'    && <Returns/>}
             {view==='employees'  && <Employees/>}
+            {view==='soldiers'   && <Soldiers/>}
             {view==='audit'      && <AuditLog/>}
             {view==='users'      && <Users/>}
           </div>
