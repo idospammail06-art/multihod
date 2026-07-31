@@ -284,6 +284,7 @@ const IconOut    = p => <I {...p} d={<><path d="M14 15v3a2 2 0 0 1-2 2H6a2 2 0 0
 const IconIn     = p => <I {...p} d={<><path d="M10 15v3a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-6a2 2 0 0 0-2 2v3"/><path d="M4 12h10"/><path d="m7 9-3 3 3 3"/></>} />;
 const IconLog    = p => <I {...p} d={<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h6"/></>} />;
 const IconUsers  = p => <I {...p} d={<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></>} />;
+const IconSoldier = p => <I {...p} d={<path d="M8.10 1.81 C6.87 2.23 6.65 2.50 6.44 3.99 C6.23 5.48 6.41 8.79 6.86 10.75 C7.31 12.71 9.53 14.48 9.12 15.74 C8.71 17.00 5.23 17.39 4.39 18.31 C3.55 19.23 3.12 20.56 4.10 21.26 C5.08 21.96 7.64 22.43 10.25 22.50 C12.86 22.57 18.17 22.40 19.78 21.70 C21.39 21.00 20.67 19.30 19.90 18.31 C19.13 17.32 15.59 16.94 15.17 15.74 C14.75 14.54 17.07 12.38 17.39 11.09 C17.71 9.80 16.77 8.59 17.12 8.01 C17.47 7.43 19.18 8.06 19.51 7.61 C19.84 7.16 20.06 6.31 19.11 5.29 C18.16 4.27 15.64 2.08 13.81 1.50 C11.98 0.92 9.33 1.40 8.10 1.81 Z"/>} />;
 const IconSearch = p => <I {...p} d={<><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></>} />;
 const IconPlus   = p => <I {...p} d={<><path d="M12 5v14M5 12h14"/></>} />;
 const IconX      = p => <I {...p} d={<><path d="M18 6 6 18M6 6l12 12"/></>} />;
@@ -1689,7 +1690,7 @@ function Employees(){
         </div>
       </div>
       {rows===null ? <ListSkeleton/> :
-       filtered.length===0 ? <Empty icon={<IconUsers size={48}/>} title="לא נמצאו חיילים" sub="עדיין לא נרשמו השאלות במערכת."/> :
+       filtered.length===0 ? <Empty icon={<IconSoldier size={48}/>} title="לא נמצאו חיילים" sub="עדיין לא נרשמו השאלות במערכת."/> :
        <div className="card overflow-hidden">
          <div className="overflow-x-auto">
            <table className="w-full text-sm">
@@ -1870,7 +1871,7 @@ function Shell(){
     {k:'equipment',label:'ציוד',icon:<IconBox/>,show:true},
     {k:'borrow',label:'השאלה',icon:<IconOut/>,show:isStaff},
     {k:'returns',label:'החזרות',icon:<IconIn/>,show:isStaff},
-    {k:'employees',label:'חיילים',icon:<IconUsers/>,show:isStaff},
+    {k:'employees',label:'חיילים',icon:<IconSoldier/>,show:isStaff},
     {k:'audit',label:'יומן פעולות',icon:<IconLog/>,show:isStaff},
     {k:'users',label:'ניהול משתמשים',icon:<IconUsers/>,show:isAdmin},
   ].filter(n=>n.show);
