@@ -480,7 +480,7 @@ function QR({text,size=128}){
 const SkelTile = () => <div className="card p-4"><div className="skeleton mb-3 h-10 w-10 rounded-xl"/><div className="skeleton mb-2 h-8 w-16 rounded-lg"/><div className="skeleton h-3 w-24 rounded"/></div>;
 const DashSkeleton = () => (
   <div className="space-y-5">
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{Array.from({length:6}).map((_,i)=><SkelTile key={i}/>)}</div>
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">{Array.from({length:5}).map((_,i)=><SkelTile key={i}/>)}</div>
     <div className="card p-5"><div className="skeleton mb-3 h-4 w-40 rounded"/><div className="skeleton h-4 w-full rounded"/></div>
     <div className="grid gap-5 lg:grid-cols-3">
       <div className="card p-5 lg:col-span-2"><div className="skeleton mb-4 h-5 w-40 rounded"/>{Array.from({length:5}).map((_,i)=><div key={i} className="skeleton mb-2.5 h-8 w-full rounded"/>)}</div>
@@ -879,13 +879,9 @@ function Dashboard({go}){
   const [selBorrow,setSelBorrow] = useState(null);
   const openBorrow = async id => { const data = await fetchBorrowFull(id); if(data) setSelBorrow(data); };
   const load = useCallback(async () => {
-      const weekAgo = new Date(Date.now()-7*864e5).toISOString();
       const startToday = todayISO()+'T00:00:00';
-      const [av,bo,fa,nw,rt,act,ab,tr,su] = await Promise.all([
-        db.countBy('status','available'),
-        db.countBy('status','borrowed'),
-        db.countBy('status','faulty'),
-        sb.from('equipment').select('*',{count:'exact',head:true}).gte('created_at',weekAgo),
+      const [eq,rt,act,ab,tr,su] = await Promise.all([
+        sb.from('equipment').select('quantity,available_quantity'),
         sb.from('borrows').select('*',{count:'exact',head:true}).eq('status','returned').gte('actual_return_at',startToday),
         sb.from('audit_log').select('*').order('created_at',{ascending:false}).limit(8),
         sb.from('borrows').select('id,full_name,expected_return_date,expected_return_time,status,approved')
@@ -893,10 +889,17 @@ function Dashboard({go}){
         sb.from('borrows').select('checkout_date,unit').limit(500),
         sb.from('borrows').select('borrow_items(quantity)').eq('approved',true).neq('status','returned'),
       ]);
+      // זמין/בהשאלה מחושבים ישירות מ-equipment.quantity/available_quantity — עמודות שכבר
+      // מתעדכנות בזמן אמת ע"י approve_borrow/process_return, ולא לפי equipment.status
+      // (עמודה שכבר לא קיימת מאז המעבר למודל הכמויות).
+      const eqRows = eq.data||[];
+      const totalQuantity = eqRows.reduce((s,r)=>s+(r.quantity||0),0);
+      const totalAvailable = eqRows.reduce((s,r)=>s+(r.available_quantity||0),0);
+      const totalInUse = Math.max(0, totalQuantity - totalAvailable);
       const signedOut = (su.data||[]).reduce((sum,b)=>sum+(b.borrow_items||[]).reduce((s,i)=>s+(i.quantity||0),0),0);
       const activeBorrows = ab.data||[];
       const overdueCount = activeBorrows.filter(isBorrowOverdue).length;
-      setS({available:av.count||0,borrowed:bo.count||0,signedOut,faulty:fa.count||0,overdue:overdueCount,fresh:nw.count||0,returnedToday:rt.count||0});
+      setS({available:totalAvailable,borrowed:totalInUse,signedOut,overdue:overdueCount,returnedToday:rt.count||0});
       setActivity(act.data||[]);
       setUpcoming([...activeBorrows].sort((a,b)=>(a.expected_return_date||'').localeCompare(b.expected_return_date||'')).slice(0,6));
 
@@ -920,19 +923,17 @@ function Dashboard({go}){
     <div className="space-y-5">
       <PendingApprovals/>
       <OverdueBanner/>
-      <div className="stagger grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="stagger grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="ציוד זמין"             value={s.available}     tone="emerald" icon={<IconBox/>}  onClick={()=>go('equipment','available')}/>
+        <StatCard label="ציוד מושאל כרגע"       value={s.borrowed}      tone="amber"   icon={<IconOut/>}  onClick={()=>go('returns')}/>
         <StatCard label="ציוד חתום"             value={s.signedOut}     tone="amber"   icon={<IconOut/>}  onClick={()=>go('returns')}/>
-        <StatCard label="ציוד תקול"             value={s.faulty}        tone="rose"    icon={<IconBox/>}  onClick={()=>go('equipment','faulty')}/>
         <StatCard label="ציוד באיחור"           value={s.overdue}       tone="rose"    icon={<IconLog/>}  onClick={()=>go('returns')}/>
-        <StatCard label="ציודים חדשים (7 ימים)" value={s.fresh}         tone="brass"   icon={<IconPlus/>} onClick={()=>go('equipment')}/>
         <StatCard label="חזרו היום"             value={s.returnedToday} tone="sky"     icon={<IconIn/>}   onClick={()=>go('returns')}/>
       </div>
 
       <MixBar data={[
         {label:'זמין',   value:s.available, color:'#34d399'},
         {label:'מושאל',  value:s.borrowed,  color:'#fbbf24'},
-        {label:'תקול',   value:s.faulty,    color:'#fb7185'},
       ]}/>
 
       <TrendCharts data={trends}/>
@@ -1600,6 +1601,7 @@ function ExtendModal({borrow,onClose,onDone}){
 function Returns(){
   const [rows,setRows] = useState(null); const [active,setActive] = useState(null); const [extending,setExtending] = useState(null);
   const [detail,setDetail] = useState(null);
+  const [q,setQ] = useState('');
   const load = useCallback(async ()=>{
     setRows(null);
     const {data} = await sb.from('borrows')
@@ -1608,12 +1610,27 @@ function Returns(){
     setRows(data||[]);
   },[]);
   useEffect(()=>{load();},[load]);
+  const filtered = useMemo(()=>{
+    if(!rows) return [];
+    const t = q.trim().toLowerCase();
+    if(!t) return rows;
+    return rows.filter(b=>{
+      const equipNames = b.borrow_items?.map(i=>i.equipment?.name).filter(Boolean).join(' ') || '';
+      return [b.full_name,b.personal_number,b.unit,equipNames].filter(Boolean).join(' ').toLowerCase().includes(t);
+    });
+  },[rows,q]);
   if(rows===null) return <ListSkeleton/>;
   return (
     <div className="space-y-4">
-      {rows.length===0 ? <Empty icon={<IconIn size={48}/>} title="אין השאלות פעילות" sub="כל הציוד חזר. עבודה יפה."/> :
+      <div className="card p-4">
+        <div className="relative">
+          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"><IconSearch size={18}/></span>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="חיפוש לפי שם משתמש, מספר אישי, יחידה, שם ציוד…" className="input pr-10"/>
+        </div>
+      </div>
+      {filtered.length===0 ? <Empty icon={<IconIn size={48}/>} title={rows.length===0?"אין השאלות פעילות":"לא נמצאו תוצאות"} sub={rows.length===0?"כל הציוד חזר. עבודה יפה.":"נסה מונח חיפוש אחר."}/> :
         <div className="stagger space-y-3">
-          {rows.map(b=>{
+          {filtered.map(b=>{
             const late = isBorrowOverdue(b);
             return (
               <div key={b.id} className="card lift flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -1739,21 +1756,47 @@ function Employees(){
    regardless of whether they have any borrows yet.
    ===================================================================== */
 function Soldiers(){
+  const {isAdmin} = useAuth();
+  const toast = useToast();
   const [rows,setRows] = useState(null);
   const [q,setQ] = useState('');
   const [detail,setDetail] = useState(null);
   const [detailBorrows,setDetailBorrows] = useState(null);
+  const [editing,setEditing] = useState(false);
+  const [form,setForm] = useState(null);
+  const [saving,setSaving] = useState(false);
   const load = useCallback(async () => {
     const {data} = await sb.from('profiles').select('*').order('full_name');
     setRows(data||[]);
   },[]);
   useEffect(()=>{load();},[load]);
   const openDetail = async person => {
-    setDetail(person); setDetailBorrows(null);
+    setDetail(person); setDetailBorrows(null); setEditing(false);
     const {data} = await sb.from('borrows')
       .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name))')
       .eq('personal_number',person.personal_number).order('checkout_date',{ascending:false});
     setDetailBorrows(data||[]);
+  };
+  const startEdit = () => {
+    setForm({full_name:detail.full_name||'', personal_number:detail.personal_number||'', unit:detail.unit||'', phone:detail.phone||''});
+    setEditing(true);
+  };
+  const saveEdit = async () => {
+    if(!form.full_name.trim()) return toast('שם מלא הוא שדה חובה','error');
+    if(!form.personal_number.trim()) return toast('מספר אישי הוא שדה חובה','error');
+    setSaving(true);
+    const {data,error} = await sb.from('profiles').update({
+      full_name: form.full_name.trim(),
+      personal_number: form.personal_number.trim(),
+      unit: form.unit.trim()||null,
+      phone: form.phone.trim()||null,
+    }).eq('id',detail.id).select().single();
+    setSaving(false);
+    if(error) return toast('שגיאה בשמירה: '+rpcErrorText(error),'error');
+    toast('הפרטים נשמרו','success');
+    setDetail(d=>({...d,...data}));
+    setRows(rs=>rs.map(r=>r.id===data.id?{...r,...data}:r));
+    setEditing(false);
   };
   const filtered = useMemo(()=>{
     if(!rows) return [];
@@ -1787,14 +1830,23 @@ function Soldiers(){
       <Modal open={!!detail} onClose={()=>setDetail(null)} wide title={detail?`פרטי חייל · ${detail.full_name}`:''}>
         {detail && (
           <div className="space-y-4">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-2xl bg-white/5 p-4 text-sm sm:grid-cols-3">
-              {[['שם מלא',detail.full_name],['מספר אישי',detail.personal_number],['יחידה',detail.unit],['טלפון',detail.phone],
-                ['תפקיד',ROLE_HE[detail.role]||detail.role],['נוצר בתאריך',fmtDate(detail.created_at)]].map(([k,v])=>(
-                <div key={k}><dt className="text-xs text-slate-500">{k}</dt>
-                  <dd className="font-medium text-slate-100">{k==='טלפון' ? <PhoneLink phone={v}/> : (v||'—')}</dd>
-                </div>
-              ))}
-            </dl>
+            {editing ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="שם מלא" required><Input value={form.full_name} onChange={e=>setForm(f=>({...f,full_name:e.target.value}))}/></Field>
+                <Field label="מספר אישי" required><Input dir="ltr" value={form.personal_number} onChange={e=>setForm(f=>({...f,personal_number:e.target.value}))}/></Field>
+                <Field label="יחידה"><Input value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))}/></Field>
+                <Field label="טלפון"><Input dir="ltr" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Field>
+              </div>
+            ) : (
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-2xl bg-white/5 p-4 text-sm sm:grid-cols-3">
+                {[['שם מלא',detail.full_name],['מספר אישי',detail.personal_number],['יחידה',detail.unit],['טלפון',detail.phone],
+                  ['תפקיד',ROLE_HE[detail.role]||detail.role],['נוצר בתאריך',fmtDate(detail.created_at)]].map(([k,v])=>(
+                  <div key={k}><dt className="text-xs text-slate-500">{k}</dt>
+                    <dd className="font-medium text-slate-100">{k==='טלפון' ? <PhoneLink phone={v}/> : (v||'—')}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
             <div>
               <span className="mb-2 block text-xs text-slate-500">השאלות ({detailBorrows?detailBorrows.length:0})</span>
               {detailBorrows===null ? <Spinner/> :
@@ -1811,7 +1863,15 @@ function Soldiers(){
                   ))}
                 </ul>}
             </div>
-            <div className="flex justify-end pt-1"><Btn variant="ghost" onClick={()=>setDetail(null)}>סגירה</Btn></div>
+            <div className="flex justify-end gap-2 pt-1">
+              {editing ? <>
+                <Btn variant="ghost" onClick={()=>setEditing(false)} disabled={saving}>ביטול</Btn>
+                <Btn variant="brass" onClick={saveEdit} disabled={saving}>{saving?'שומר…':'שמירה'}</Btn>
+              </> : <>
+                <Btn variant="ghost" onClick={()=>setDetail(null)}>סגירה</Btn>
+                {isAdmin && <Btn variant="brass" onClick={startEdit}><IconEdit size={16}/> עריכה</Btn>}
+              </>}
+            </div>
           </div>
         )}
       </Modal>
