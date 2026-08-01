@@ -1364,8 +1364,21 @@ function Borrow({onDone,employeeMode}){
   const [f,setF] = useState(emptyForm);
   const [sig,setSig] = useState(null); const [agree,setAgree] = useState(false);
   const [busy,setBusy] = useState(false); const [done,setDone] = useState(null);
+  const [lookupPn,setLookupPn] = useState(''); const [lookupBusy,setLookupBusy] = useState(false);
   const set = (k,v)=>setF(x=>({...x,[k]:v}));
   useEffect(()=>{ db.available().then(({data})=>setAvail(data||[])); },[]);
+  // מנהל בלבד (employeeMode===false) — חיפוש קריאה-בלבד מול profiles, למילוי אוטומטי
+  // של פרטי המשאיל. לא יוצר משתמש, לא נוגע בטבלאות/RPC/הרשאות.
+  const lookupSoldier = async () => {
+    const pn = lookupPn.trim();
+    if(!pn) return toast('נא להזין מספר אישי לחיפוש','error');
+    setLookupBusy(true);
+    const {data} = await sb.from('profiles').select('*').eq('personal_number',pn).single();
+    setLookupBusy(false);
+    if(!data) return toast('לא נמצא משתמש עם מספר אישי זה','error');
+    setF(x=>({...x, full_name:data.full_name||'', personal_number:data.personal_number||'', unit:data.unit||'', phone:data.phone||''}));
+    toast('פרטי החייל מולאו אוטומטית','success');
+  };
   const add = it => { if(picked.find(p=>p.id===it.id)) return; setPicked(p=>[...p,{...it,quantity:1,cameraNumber:''}]); };
   const NEEDS_CAMERA_NUM = n => n==='מצלמות/גו פרו' || n==='מרום X';
   const remove = id => setPicked(p=>p.filter(x=>x.id!==id));
@@ -1432,6 +1445,19 @@ function Borrow({onDone,employeeMode}){
   return (
     <div className="grid gap-5 lg:grid-cols-3">
       <div className="space-y-5 lg:col-span-2">
+        {!employeeMode &&
+          <div className="card p-5">
+            <h3 className="mb-3 font-bold text-white">חיפוש חייל (מנהל)</h3>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[200px] flex-1">
+                <Field label="מספר אישי">
+                  <Input dir="ltr" value={lookupPn} onChange={e=>setLookupPn(e.target.value)} onKeyDown={e=>e.key==='Enter'&&lookupSoldier()} placeholder="לדוגמה: 8123456"/>
+                </Field>
+              </div>
+              <Btn variant="outline" onClick={lookupSoldier} disabled={lookupBusy}>{lookupBusy?'מחפש…':'חיפוש'}</Btn>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">מילוי אוטומטי של פרטי המשאיל/ה בטופס למטה. אפשר עדיין לערוך אותם ידנית אחרי החיפוש.</p>
+          </div>}
         <div className="card p-5">
           <h3 className="mb-4 font-bold text-white">פרטי המשאיל/ה</h3>
           <div className="grid gap-4 sm:grid-cols-2">
