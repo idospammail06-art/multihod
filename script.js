@@ -283,6 +283,7 @@ const IconBox    = p => <I {...p} d={<><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><pat
 const IconOut    = p => <I {...p} d={<><path d="M14 15v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><path d="M20 12H10"/><path d="m17 9 3 3-3 3"/></>} />;
 const IconIn     = p => <I {...p} d={<><path d="M10 15v3a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-6a2 2 0 0 0-2 2v3"/><path d="M4 12h10"/><path d="m7 9-3 3 3 3"/></>} />;
 const IconLog    = p => <I {...p} d={<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h6"/></>} />;
+const IconFiles  = p => <I {...p} d={<><path d="M8 2h8l4 4v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z"/><path d="M16 2v4h4"/><path d="M4 8v12a2 2 0 0 0 2 2h1"/></>} />;
 const IconUsers  = p => <I {...p} d={<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></>} />;
 const IconSoldier = p => <I {...p} d={<path d="M8.10 1.81 C6.87 2.23 6.65 2.50 6.44 3.99 C6.23 5.48 6.41 8.79 6.86 10.75 C7.31 12.71 9.53 14.48 9.12 15.74 C8.71 17.00 5.23 17.39 4.39 18.31 C3.55 19.23 3.12 20.56 4.10 21.26 C5.08 21.96 7.64 22.43 10.25 22.50 C12.86 22.57 18.17 22.40 19.78 21.70 C21.39 21.00 20.67 19.30 19.90 18.31 C19.13 17.32 15.59 16.94 15.17 15.74 C14.75 14.54 17.07 12.38 17.39 11.09 C17.71 9.80 16.77 8.59 17.12 8.01 C17.47 7.43 19.18 8.06 19.51 7.61 C19.84 7.16 20.06 6.31 19.11 5.29 C18.16 4.27 15.64 2.08 13.81 1.50 C11.98 0.92 9.33 1.40 8.10 1.81 Z"/>} />;
 const IconSearch = p => <I {...p} d={<><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></>} />;
@@ -1933,15 +1934,12 @@ function ReportHistory(){
   const load = useCallback(async () => {
     setRows(null); setLoadError(null);
     const {data:entries,error} = await sb.storage.from(REPORTS_BUCKET).list('',{sortBy:{column:'name',order:'desc'}});
-    console.log('[DEBUG ReportHistory] root list() ->', {entries, error}); // TEMP — remove after diagnosing
     if(error){ setLoadError(error.message||'שגיאה בטעינת הדוחות'); setRows([]); return; }
     // Storage's list() marks virtual sub-folders with id:null (no file metadata) — these
     // are the date folders (e.g. "2026-07-31"); actual files have a real id.
     const dateFolders = (entries||[]).filter(e=>e.id===null);
-    console.log('[DEBUG ReportHistory] dateFolders (filtered by id===null) ->', dateFolders); // TEMP — remove after diagnosing
     const perFolder = await Promise.all(dateFolders.map(async folder => {
-      const {data:files,error:filesErr} = await sb.storage.from(REPORTS_BUCKET).list(folder.name,{sortBy:{column:'name',order:'desc'}});
-      console.log(`[DEBUG ReportHistory] list('${folder.name}') ->`, {files, error:filesErr}); // TEMP — remove after diagnosing
+      const {data:files} = await sb.storage.from(REPORTS_BUCKET).list(folder.name,{sortBy:{column:'name',order:'desc'}});
       return (files||[]).filter(f=>f.id!==null).map(f => ({
         date: folder.name,
         name: f.name,
@@ -1951,7 +1949,6 @@ function ReportHistory(){
       }));
     }));
     const flat = perFolder.flat().sort((a,b)=> (b.path||'').localeCompare(a.path||''));
-    console.log('[DEBUG ReportHistory] final flattened rows ->', flat); // TEMP — remove after diagnosing
     setRows(flat);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -2089,7 +2086,7 @@ function Shell(){
     {k:'employees',label:'היסטוריית השאלות',icon:<IconClock/>,show:isStaff},
     {k:'soldiers',label:'חיילים',icon:<IconSoldier/>,show:isStaff},
     {k:'audit',label:'יומן פעולות',icon:<IconLog/>,show:isStaff},
-    {k:'reports',label:'היסטוריית דוחות',icon:<IconLog/>,show:isStaff},
+    {k:'reports',label:'היסטוריית דוחות',icon:<IconFiles/>,show:isStaff},
     {k:'users',label:'ניהול משתמשים',icon:<IconUsers/>,show:isAdmin},
   ].filter(n=>n.show);
   const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'היסטוריית השאלות',soldiers:'חיילי היחידה',audit:'יומן פעולות',reports:'היסטוריית דוחות',users:'ניהול משתמשים'};
@@ -2202,8 +2199,83 @@ function ConfigMissing(){
 }
 const LoadingScreen = () => <div className="flex min-h-full items-center justify-center"><Spinner label="טוען…"/></div>;
 
+/* =====================================================================
+   MY BORROWS — regular employee's own loan history (read-only)
+   ===================================================================== */
+function MyBorrows(){
+  const {profile} = useAuth();
+  const [rows,setRows] = useState(null);
+  useEffect(()=>{
+    if(!profile?.personal_number) return;
+    sb.from('borrows')
+      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name))')
+      .eq('personal_number',profile.personal_number)
+      .order('checkout_date',{ascending:false})
+      .then(({data})=>setRows(data||[]));
+  },[profile?.personal_number]);
+  if(rows===null) return <ListSkeleton/>;
+  if(rows.length===0) return <Empty icon={<IconClock size={48}/>} title="אין עדיין השאלות" sub="ברגע שתשלח/י טופס החתמה, הוא יופיע כאן."/>;
+  return (
+    <div className="stagger space-y-3">
+      {rows.map(b=>{
+        const late = isBorrowOverdue(b);
+        return (
+          <div key={b.id} className="card p-4">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-slate-100">{b.borrow_items?.map(itemLabel).filter(Boolean).join(' · ')||'—'}</span>
+              <Badge map={BORROW_STATUS} value={late?'overdue':b.status}/>
+            </div>
+            <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
+              <div><dt className="text-slate-500">תאריך לקיחה</dt><dd className="num mt-0.5 text-slate-200">{fmtDate(b.checkout_date)}</dd></div>
+              <div><dt className="text-slate-500">החזרה מתוכננת</dt><dd className="num mt-0.5 text-slate-200">{fmtDate(b.expected_return_date)}</dd></div>
+              <div><dt className="text-slate-500">החזרה בפועל</dt><dd className="num mt-0.5 text-slate-200">{b.actual_return_at?fmtDT(b.actual_return_at):'טרם הוחזר'}</dd></div>
+              <div><dt className="text-slate-500">איחור</dt><dd className={cx('num mt-0.5',late?'font-medium text-rose-300':'text-slate-200')}>{late?'כן':'לא'}</dd></div>
+            </dl>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MY ACCOUNT — self-service profile edit. Deliberately excludes
+   personal_number: letting a user change their own login identifier
+   is a real risk (could collide with / impersonate another profile),
+   unlike an admin editing someone else's record from Soldiers().
+   ===================================================================== */
+function MyAccount(){
+  const {profile,refreshProfile} = useAuth();
+  const toast = useToast();
+  const [form,setForm] = useState({full_name:profile?.full_name||'', unit:profile?.unit||'', phone:profile?.phone||''});
+  const [saving,setSaving] = useState(false);
+  const save = async () => {
+    if(!form.full_name.trim()) return toast('שם מלא הוא שדה חובה','error');
+    setSaving(true);
+    const {error} = await sb.from('profiles').update({
+      full_name: form.full_name.trim(), unit: form.unit.trim()||null, phone: form.phone.trim()||null,
+    }).eq('id',profile.id);
+    setSaving(false);
+    if(error) return toast('שגיאה בשמירה: '+rpcErrorText(error),'error');
+    toast('הפרטים נשמרו','success');
+    refreshProfile && refreshProfile();
+  };
+  return (
+    <div className="card max-w-lg space-y-4 p-5">
+      <div className="grid gap-4">
+        <Field label="שם מלא" required><Input value={form.full_name} onChange={e=>setForm(f=>({...f,full_name:e.target.value}))}/></Field>
+        <Field label="מספר אישי" hint="לא ניתן לשינוי עצמי — פנה/י למנהל מערכת אם צריך לתקן"><Input dir="ltr" value={profile?.personal_number||''} disabled className="opacity-60"/></Field>
+        <Field label="יחידה"><Input value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))}/></Field>
+        <Field label="טלפון"><Input dir="ltr" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></Field>
+      </div>
+      <div className="flex justify-end"><Btn variant="brass" onClick={save} disabled={saving}>{saving?'שומר…':'שמירת שינויים'}</Btn></div>
+    </div>
+  );
+}
+
 /* Regular employees land straight on the loan form — no dashboard, no sidebar.
-   They can also switch to a read-only equipment/availability view. */
+   Equipment selection happens only inside the borrow form itself; they can
+   also view their own loan history and edit their own account details. */
 function EmployeeShell(){
   const {profile,signOut} = useAuth();
   const [tab,setTab] = useState('borrow');
@@ -2221,7 +2293,8 @@ function EmployeeShell(){
           <div className="flex items-center gap-2">
             <div className="flex rounded-xl bg-white/5 p-1">
               <button onClick={()=>setTab('borrow')} className={cx('rounded-lg px-3 py-1.5 text-xs font-medium transition',tab==='borrow'?'bg-white/10 text-white':'text-slate-400')}>טופס החתמה</button>
-              <button onClick={()=>setTab('equipment')} className={cx('rounded-lg px-3 py-1.5 text-xs font-medium transition',tab==='equipment'?'bg-white/10 text-white':'text-slate-400')}>ציוד וזמינות</button>
+              <button onClick={()=>setTab('history')} className={cx('rounded-lg px-3 py-1.5 text-xs font-medium transition',tab==='history'?'bg-white/10 text-white':'text-slate-400')}>היסטוריית ההשאלות שלי</button>
+              <button onClick={()=>setTab('account')} className={cx('rounded-lg px-3 py-1.5 text-xs font-medium transition',tab==='account'?'bg-white/10 text-white':'text-slate-400')}>עריכת פרטי חשבון</button>
             </div>
             <button onClick={signOut} className="flex items-center gap-2 rounded-xl bg-white/8 px-3 py-2 text-xs text-slate-300 transition hover:bg-white/14 hover:text-white">
               <IconLogout size={15}/> <span className="hidden sm:inline">התנתקות</span>
@@ -2231,9 +2304,12 @@ function EmployeeShell(){
       </header>
       <main className="flex-1 px-3 pb-8 lg:px-4">
         <div className="rise mx-auto max-w-5xl">
-          {tab==='borrow'
-            ? <><h1 className="mb-4 text-xl font-bold text-white">טופס החתמה על ציוד</h1><Borrow employeeMode onDone={()=>{}}/></>
-            : <><h1 className="mb-4 text-xl font-bold text-white">ציוד וזמינות</h1><Equipment/></>}
+          {tab==='borrow' &&
+            <><h1 className="mb-4 text-xl font-bold text-white">טופס החתמה על ציוד</h1><Borrow employeeMode onDone={()=>{}}/></>}
+          {tab==='history' &&
+            <><h1 className="mb-4 text-xl font-bold text-white">היסטוריית ההשאלות שלי</h1><MyBorrows/></>}
+          {tab==='account' &&
+            <><h1 className="mb-4 text-xl font-bold text-white">עריכת פרטי חשבון</h1><MyAccount/></>}
         </div>
       </main>
     </div>
