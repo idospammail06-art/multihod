@@ -1915,6 +1915,72 @@ function AuditLog(){
 }
 
 /* =====================================================================
+   REPORT HISTORY — read-only, sourced directly from Storage
+   (equipment-reports bucket). No table, no cache: a report appears the
+   moment it exists in Storage and disappears the moment it's deleted
+   there — nothing else to keep in sync.
+   ===================================================================== */
+const fmtFileSize = bytes => {
+  if(bytes==null) return '—';
+  if(bytes < 1024) return `${bytes} B`;
+  if(bytes < 1024*1024) return `${(bytes/1024).toFixed(1)} KB`;
+  return `${(bytes/1024/1024).toFixed(1)} MB`;
+};
+function ReportHistory(){
+  const [rows,setRows] = useState(null);
+  const [loadError,setLoadError] = useState(null);
+  const REPORTS_BUCKET = 'equipment-reports';
+  const load = useCallback(async () => {
+    setRows(null); setLoadError(null);
+    const {data:entries,error} = await sb.storage.from(REPORTS_BUCKET).list('',{sortBy:{column:'name',order:'desc'}});
+    if(error){ setLoadError(error.message||'שגיאה בטעינת הדוחות'); setRows([]); return; }
+    // Storage's list() marks virtual sub-folders with id:null (no file metadata) — these
+    // are the date folders (e.g. "2026-07-31"); actual files have a real id.
+    const dateFolders = (entries||[]).filter(e=>e.id===null);
+    const perFolder = await Promise.all(dateFolders.map(async folder => {
+      const {data:files} = await sb.storage.from(REPORTS_BUCKET).list(folder.name,{sortBy:{column:'name',order:'desc'}});
+      return (files||[]).filter(f=>f.id!==null).map(f => ({
+        date: folder.name,
+        name: f.name,
+        path: `${folder.name}/${f.name}`,
+        size: f.metadata?.size ?? null,
+        created_at: f.created_at || f.metadata?.lastModified || null,
+      }));
+    }));
+    const flat = perFolder.flat().sort((a,b)=> (b.path||'').localeCompare(a.path||''));
+    setRows(flat);
+  },[]);
+  useEffect(()=>{load();},[load]);
+  if(rows===null) return <ListSkeleton/>;
+  return (
+    <div className="space-y-4">
+      {loadError ? <Empty icon={<IconAlert size={48} className="text-rose-400"/>} title="שגיאה בטעינת הדוחות מהאחסון" sub={loadError}
+        action={<Btn variant="outline" onClick={load}>נסה שוב</Btn>}/> :
+       rows.length===0 ? <Empty icon={<IconLog size={48}/>} title="אין עדיין דוחות" sub="ברגע שדוח ראשון ייווצר אוטומטית, הוא יופיע כאן."/> :
+       <div className="stagger space-y-3">
+         {rows.map(r=>{
+           const url = sb.storage.from(REPORTS_BUCKET).getPublicUrl(r.path).data.publicUrl;
+           return (
+             <div key={r.path} className="card lift flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+               <div className="min-w-0 flex items-center gap-3">
+                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/5 text-slate-400"><IconLog size={20}/></div>
+                 <div className="min-w-0">
+                   <div className="truncate font-medium text-slate-100">{r.name}</div>
+                   <div className="num mt-0.5 text-xs text-slate-500">{fmtDate(r.date)} · {fmtFileSize(r.size)}</div>
+                 </div>
+               </div>
+               <a href={url} target="_blank" rel="noreferrer" className="shrink-0">
+                 <Btn variant="outline"><IconIn size={16}/> צפייה בדוח</Btn>
+               </a>
+             </div>
+           );
+         })}
+       </div>}
+    </div>
+  );
+}
+
+/* =====================================================================
    USERS (admin)
    ===================================================================== */
 function Users(){
@@ -2019,9 +2085,10 @@ function Shell(){
     {k:'employees',label:'היסטוריית השאלות',icon:<IconClock/>,show:isStaff},
     {k:'soldiers',label:'חיילים',icon:<IconSoldier/>,show:isStaff},
     {k:'audit',label:'יומן פעולות',icon:<IconLog/>,show:isStaff},
+    {k:'reports',label:'היסטוריית דוחות',icon:<IconLog/>,show:isStaff},
     {k:'users',label:'ניהול משתמשים',icon:<IconUsers/>,show:isAdmin},
   ].filter(n=>n.show);
-  const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'היסטוריית השאלות',soldiers:'חיילי היחידה',audit:'יומן פעולות',users:'ניהול משתמשים'};
+  const titles = {dashboard:'לוח בקרה',equipment:'ניהול ציוד',borrow:'השאלת ציוד',returns:'קליטת החזרות',employees:'היסטוריית השאלות',soldiers:'חיילי היחידה',audit:'יומן פעולות',reports:'היסטוריית דוחות',users:'ניהול משתמשים'};
   const NavLinks = () => (
     <nav className="space-y-1.5">
       {nav.map(n=>(
@@ -2101,6 +2168,7 @@ function Shell(){
             {view==='employees'  && <Employees/>}
             {view==='soldiers'   && <Soldiers/>}
             {view==='audit'      && <AuditLog/>}
+            {view==='reports'    && <ReportHistory/>}
             {view==='users'      && <Users/>}
           </div>
         </main>
