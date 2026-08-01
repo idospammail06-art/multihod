@@ -1933,12 +1933,15 @@ function ReportHistory(){
   const load = useCallback(async () => {
     setRows(null); setLoadError(null);
     const {data:entries,error} = await sb.storage.from(REPORTS_BUCKET).list('',{sortBy:{column:'name',order:'desc'}});
+    console.log('[DEBUG ReportHistory] root list() ->', {entries, error}); // TEMP — remove after diagnosing
     if(error){ setLoadError(error.message||'שגיאה בטעינת הדוחות'); setRows([]); return; }
     // Storage's list() marks virtual sub-folders with id:null (no file metadata) — these
     // are the date folders (e.g. "2026-07-31"); actual files have a real id.
     const dateFolders = (entries||[]).filter(e=>e.id===null);
+    console.log('[DEBUG ReportHistory] dateFolders (filtered by id===null) ->', dateFolders); // TEMP — remove after diagnosing
     const perFolder = await Promise.all(dateFolders.map(async folder => {
-      const {data:files} = await sb.storage.from(REPORTS_BUCKET).list(folder.name,{sortBy:{column:'name',order:'desc'}});
+      const {data:files,error:filesErr} = await sb.storage.from(REPORTS_BUCKET).list(folder.name,{sortBy:{column:'name',order:'desc'}});
+      console.log(`[DEBUG ReportHistory] list('${folder.name}') ->`, {files, error:filesErr}); // TEMP — remove after diagnosing
       return (files||[]).filter(f=>f.id!==null).map(f => ({
         date: folder.name,
         name: f.name,
@@ -1948,6 +1951,7 @@ function ReportHistory(){
       }));
     }));
     const flat = perFolder.flat().sort((a,b)=> (b.path||'').localeCompare(a.path||''));
+    console.log('[DEBUG ReportHistory] final flattened rows ->', flat); // TEMP — remove after diagnosing
     setRows(flat);
   },[]);
   useEffect(()=>{load();},[load]);
