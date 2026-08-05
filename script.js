@@ -89,7 +89,9 @@ function makeDemoClient(){
   const catOf = id => { const c=S.categories.find(c=>c.id===id); return c?{name:c.name}:null; };
   const itemsOf = bid => S.borrow_items.filter(bi=>bi.borrow_id===bid).map(bi=>{
     const e=S.equipment.find(x=>x.id===bi.equipment_id)||{};
-    return {quantity:bi.quantity, camera_number:bi.camera_number||null, equipment:{name:e.name, serial_number:e.serial_number}};
+    return {quantity:bi.quantity, camera_number:bi.camera_number||null, camera_numbers:bi.camera_numbers||null,
+      helmet_adapter_signed: bi.helmet_adapter_signed==null?null:bi.helmet_adapter_signed, camera_bag_signed: bi.camera_bag_signed==null?null:bi.camera_bag_signed,
+      equipment:{name:e.name, serial_number:e.serial_number}};
   });
   function run(q){
     const tbl = S[q.table] || [];
@@ -147,7 +149,8 @@ function makeDemoClient(){
         purpose:p.p_purpose, approved:false, approved_by:null, approved_at:null, checkout_date:p.p_checkout_date, checkout_time:p.p_checkout_time,
         expected_return_date:p.p_expected_return_date, expected_return_time:p.p_expected_return_time,
         status:'active', actual_return_at:null, signature_path:p.p_signature_path, created_at:now()});
-      (p.p_items||[]).forEach(it=>{ S.borrow_items.push({id:uid('bi'), borrow_id:id, equipment_id:it.equipment_id, quantity:it.quantity, camera_number:it.camera_number||null});
+      (p.p_items||[]).forEach(it=>{ S.borrow_items.push({id:uid('bi'), borrow_id:id, equipment_id:it.equipment_id, quantity:it.quantity, camera_number:it.camera_number||null,
+        camera_numbers:it.camera_numbers||null, helmet_adapter_signed: it.helmet_adapter_signed==null?null:it.helmet_adapter_signed, camera_bag_signed: it.camera_bag_signed==null?null:it.camera_bag_signed});
         const e=S.equipment.find(x=>x.id===it.equipment_id); if(e) e.status='borrowed'; });
       S.audit_log.unshift({id:uid('a'),action:'BORROW',entity_type:'borrows',entity_id:id,actor_name:'מנהל הדגמה',created_at:now()});
       return {data:id, error:null};
@@ -195,7 +198,15 @@ const nowTime  = () => new Date().toTimeString().slice(0,5);
 const fmtDate  = d => d ? new Date(d).toLocaleDateString('he-IL') : '—';
 const fmtDT    = d => d ? new Date(d).toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'}) : '—';
 const money    = n => (n==null||n==='') ? '—' : '₪' + Number(n).toLocaleString('he-IL');
-const itemLabel = i => i?.equipment?.name ? (i.equipment.name + (i.camera_number ? ` (מצלמה מס' ${i.camera_number})` : '')) : null;
+const itemLabel = i => {
+  if(!i?.equipment?.name) return null;
+  const camNums = Array.isArray(i.camera_numbers) ? i.camera_numbers.filter(Boolean) : (i.camera_number ? [i.camera_number] : []);
+  const extra = [];
+  if(camNums.length) extra.push(camNums.length>1 ? `מצלמות מס' ${camNums.join(', ')}` : `מצלמה מס' ${camNums[0]}`);
+  if(i.helmet_adapter_signed!=null) extra.push(`מתאם לקסדה: ${i.helmet_adapter_signed?'כן':'לא'}`);
+  if(i.camera_bag_signed!=null) extra.push(`תיק למצלמה: ${i.camera_bag_signed?'כן':'לא'}`);
+  return i.equipment.name + (extra.length ? ` (${extra.join(' · ')})` : '');
+};
 /* Normalizes an Israeli or already-international phone number to a direct
    WhatsApp chat link (wa.me expects digits only, no plus/spaces/dashes). */
 const waLink = (phone) => {
@@ -537,7 +548,7 @@ const db = {
 };
 const fetchBorrowFull = async id => {
   const {data} = await sb.from('borrows')
-    .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name,serial_number))')
+    .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name,serial_number))')
     .eq('id',id).single();
   return data;
 };
@@ -811,7 +822,7 @@ function PendingApprovals(){
   const [sel,setSel] = useState(null);
   const load = useCallback(async ()=>{
     const {data} = await sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name,serial_number))')
+      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name,serial_number))')
       .eq('approved',false).neq('status','cancelled').order('created_at',{ascending:false});
     setRows(data||[]);
   },[]);
@@ -844,7 +855,7 @@ function OverdueBanner(){
   const [sel,setSel] = useState(null);
   const load = useCallback(async ()=>{
     const {data} = await sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name,serial_number))')
+      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name,serial_number))')
       .eq('approved',true).neq('status','returned').neq('status','cancelled');
     setRows((data||[]).filter(isBorrowOverdue).sort((a,b)=>(a.expected_return_date||'').localeCompare(b.expected_return_date||'')));
   },[]);
@@ -881,14 +892,14 @@ function Dashboard({go}){
   const openBorrow = async id => { const data = await fetchBorrowFull(id); if(data) setSelBorrow(data); };
   const load = useCallback(async () => {
       const startToday = todayISO()+'T00:00:00';
-      const [eq,rt,act,ab,tr,su] = await Promise.all([
+      const [eq,rt,act,ab,tr,pa] = await Promise.all([
         sb.from('equipment').select('quantity,available_quantity'),
         sb.from('borrows').select('*',{count:'exact',head:true}).eq('status','returned').gte('actual_return_at',startToday),
         sb.from('audit_log').select('*').order('created_at',{ascending:false}).limit(8),
         sb.from('borrows').select('id,full_name,expected_return_date,expected_return_time,status,approved')
           .eq('approved',true).neq('status','returned').neq('status','cancelled'),
         sb.from('borrows').select('checkout_date,unit').limit(500),
-        sb.from('borrows').select('borrow_items(quantity)').eq('approved',true).neq('status','returned'),
+        sb.from('borrows').select('*',{count:'exact',head:true}).eq('approved',false).neq('status','cancelled'),
       ]);
       // זמין/בהשאלה מחושבים ישירות מ-equipment.quantity/available_quantity — עמודות שכבר
       // מתעדכנות בזמן אמת ע"י approve_borrow/process_return, ולא לפי equipment.status
@@ -897,10 +908,9 @@ function Dashboard({go}){
       const totalQuantity = eqRows.reduce((s,r)=>s+(r.quantity||0),0);
       const totalAvailable = eqRows.reduce((s,r)=>s+(r.available_quantity||0),0);
       const totalInUse = Math.max(0, totalQuantity - totalAvailable);
-      const signedOut = (su.data||[]).reduce((sum,b)=>sum+(b.borrow_items||[]).reduce((s,i)=>s+(i.quantity||0),0),0);
       const activeBorrows = ab.data||[];
       const overdueCount = activeBorrows.filter(isBorrowOverdue).length;
-      setS({available:totalAvailable,borrowed:totalInUse,signedOut,overdue:overdueCount,returnedToday:rt.count||0});
+      setS({available:totalAvailable,borrowed:totalInUse,pendingApproval:pa.count||0,overdue:overdueCount,returnedToday:rt.count||0});
       setActivity(act.data||[]);
       setUpcoming([...activeBorrows].sort((a,b)=>(a.expected_return_date||'').localeCompare(b.expected_return_date||'')).slice(0,6));
 
@@ -927,7 +937,7 @@ function Dashboard({go}){
       <div className="stagger grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="ציוד זמין"             value={s.available}     tone="emerald" icon={<IconBox/>}  onClick={()=>go('equipment','available')}/>
         <StatCard label="ציוד מושאל כרגע"       value={s.borrowed}      tone="amber"   icon={<IconOut/>}  onClick={()=>go('returns')}/>
-        <StatCard label="ציוד חתום"             value={s.signedOut}     tone="amber"   icon={<IconOut/>}  onClick={()=>go('returns')}/>
+        <StatCard label="ממתין לאישור"          value={s.pendingApproval} tone="brass" icon={<IconAlert/>} onClick={()=>go('returns')}/>
         <StatCard label="ציוד באיחור"           value={s.overdue}       tone="rose"    icon={<IconLog/>}  onClick={()=>go('returns')}/>
         <StatCard label="חזרו היום"             value={s.returnedToday} tone="sky"     icon={<IconIn/>}   onClick={()=>go('returns')}/>
       </div>
@@ -1309,8 +1319,16 @@ function Equipment({initialFilter}){
    BORROW  (certificate builder — prints light)
    ===================================================================== */
 function buildCertificate(borrow, items, sigDataUrl){
+  const camCol = i => {
+    const camNums = (i.cameraNumbers||[]).filter(Boolean);
+    const parts = [];
+    if(camNums.length) parts.push(`מצלמות מס' ${camNums.join(', ')}`);
+    if(i.helmetAdapterSigned) parts.push(`מתאם לקסדה: ${i.helmetAdapterSigned==='yes'?'כן':'לא'}`);
+    if(i.cameraBagSigned) parts.push(`תיק למצלמה: ${i.cameraBagSigned==='yes'?'כן':'לא'}`);
+    return parts.length ? parts.join(' · ') : (i.serial_number||i.asset_number||'—');
+  };
   const rows = items.map(i=>`<tr><td style="padding:6px 10px;border:1px solid #ccc">${i.name}</td>
-    <td style="padding:6px 10px;border:1px solid #ccc">${i.cameraNumber?`מצלמה מס' ${i.cameraNumber}`:(i.serial_number||i.asset_number||'—')}</td>
+    <td style="padding:6px 10px;border:1px solid #ccc">${camCol(i)}</td>
     <td style="padding:6px 10px;border:1px solid #ccc;text-align:center">${i.quantity}</td></tr>`).join('');
   return `
   <div dir="rtl" style="font-family:Heebo,Arial,sans-serif;color:#0b1220;max-width:760px;margin:auto">
@@ -1379,8 +1397,14 @@ function Borrow({onDone,employeeMode}){
     setF(x=>({...x, full_name:data.full_name||'', personal_number:data.personal_number||'', unit:data.unit||'', phone:data.phone||''}));
     toast('פרטי החייל מולאו אוטומטית','success');
   };
-  const add = it => { if(picked.find(p=>p.id===it.id)) return; setPicked(p=>[...p,{...it,quantity:1,cameraNumber:''}]); };
+  const add = it => { if(picked.find(p=>p.id===it.id)) return; setPicked(p=>[...p,{...it,quantity:1,cameraNumbers:[''],helmetAdapterSigned:'',cameraBagSigned:''}]); };
   const NEEDS_CAMERA_NUM = n => n==='מצלמות/גו פרו' || n==='מרום X';
+  const NEEDS_MAROM_EXTRAS = n => n==='מרום X';
+  const setQty = (id,qty) => setPicked(x=>x.map(i=>{
+    if(i.id!==id) return i;
+    const cameraNumbers = Array.from({length:qty},(_,idx)=>i.cameraNumbers?.[idx]||'');
+    return {...i,quantity:qty,cameraNumbers};
+  }));
   const remove = id => setPicked(p=>p.filter(x=>x.id!==id));
   const results = useMemo(()=>{
     if(!avail) return [];
@@ -1394,8 +1418,11 @@ function Borrow({onDone,employeeMode}){
     if(picked.length===0) return toast('נא לבחור לפחות פריט אחד','error');
     const badQty = picked.find(p=>!Number.isInteger(p.quantity) || p.quantity<=0 || p.quantity>(p.available_quantity??0));
     if(badQty) return toast(`הכמות עבור "${badQty.name}" אינה תקינה (זמין: ${badQty.available_quantity??0})`,'error');
-    const missingCam = picked.find(p=>NEEDS_CAMERA_NUM(p.category?.name) && !p.cameraNumber);
-    if(missingCam) return toast(`נא לבחור מספר מצלמה עבור ${missingCam.name}`,'error');
+    const missingCam = picked.find(p=>NEEDS_CAMERA_NUM(p.category?.name) &&
+      (!Array.isArray(p.cameraNumbers) || p.cameraNumbers.length!==p.quantity || p.cameraNumbers.some(c=>!c)));
+    if(missingCam) return toast(`נא לבחור את כל מספרי המצלמה עבור ${missingCam.name}`,'error');
+    const missingExtra = picked.find(p=>NEEDS_MAROM_EXTRAS(p.category?.name) && (!p.helmetAdapterSigned || !p.cameraBagSigned));
+    if(missingExtra) return toast(`נא למלא חתימה על מתאם לקסדה ותיק למצלמה עבור ${missingExtra.name}`,'error');
     if(!agree) return toast('נא לאשר את ההצהרה','error');
     if(!sig) return toast('נדרשת חתימה','error');
     setBusy(true);
@@ -1412,7 +1439,13 @@ function Borrow({onDone,employeeMode}){
       p_checkout_date:f.checkout_date, p_checkout_time:f.checkout_time||null,
       p_expected_return_date:f.expected_return_date, p_expected_return_time:f.expected_return_time||null,
       p_signature_path:sigPath,
-      p_items:picked.map(p=>({equipment_id:p.id,quantity:p.quantity,camera_number:p.cameraNumber||null})),
+      p_items:picked.map(p=>({
+        equipment_id:p.id, quantity:p.quantity,
+        camera_number: p.cameraNumbers?.[0]||null,
+        camera_numbers: NEEDS_CAMERA_NUM(p.category?.name) ? (p.cameraNumbers||[]).filter(Boolean) : null,
+        helmet_adapter_signed: NEEDS_MAROM_EXTRAS(p.category?.name) ? (p.helmetAdapterSigned==='yes') : null,
+        camera_bag_signed: NEEDS_MAROM_EXTRAS(p.category?.name) ? (p.cameraBagSigned==='yes') : null,
+      })),
     });
     setBusy(false);
     if(error) return toast('שגיאה: '+rpcErrorText(error),'error');
@@ -1513,15 +1546,37 @@ function Borrow({onDone,employeeMode}){
                     <div className="flex items-center gap-2">
                       <span className="flex-1 truncate">{p.name} <span className="num text-xs text-slate-500">(זמין: {p.available_quantity})</span></span>
                       <input type="number" min="1" max={p.available_quantity} value={p.quantity}
-                        onChange={e=>setPicked(x=>x.map(i=>i.id===p.id?{...i,quantity:Math.min(i.available_quantity??1,Math.max(1,Math.floor(+e.target.value)||1))}:i))}
+                        onChange={e=>setQty(p.id, Math.min(p.available_quantity??1,Math.max(1,Math.floor(+e.target.value)||1)))}
                         className="w-14 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-center text-sm text-white"/>
                       <button onClick={()=>remove(p.id)} className="text-slate-400 transition hover:text-rose-400"><IconX size={16}/></button>
                     </div>
                     {NEEDS_CAMERA_NUM(p.category?.name) &&
-                      <Select className="mt-2" value={p.cameraNumber||''} onChange={e=>setPicked(x=>x.map(i=>i.id===p.id?{...i,cameraNumber:e.target.value}:i))}>
-                        <option value="">— בחר/י מספר מצלמה —</option>
-                        {Array.from({length:13},(_,i)=>i+1).map(n=><option key={n} value={n}>מצלמה מס' {n}</option>)}
-                      </Select>}
+                      <div className="mt-2 space-y-2">
+                        {Array.from({length:p.quantity},(_,idx)=>(
+                          <Select key={idx} value={p.cameraNumbers?.[idx]||''}
+                            onChange={e=>setPicked(x=>x.map(i=>{
+                              if(i.id!==p.id) return i;
+                              const cameraNumbers=[...(i.cameraNumbers||[])]; cameraNumbers[idx]=e.target.value;
+                              return {...i,cameraNumbers};
+                            }))}>
+                            <option value="">{`— בחר/י מספר מצלמה ${idx+1} —`}</option>
+                            {Array.from({length:13},(_,n)=>n+1).map(n=><option key={n} value={n}>מספר מצלמה {idx+1}: מצלמה מס' {n}</option>)}
+                          </Select>
+                        ))}
+                      </div>}
+                    {NEEDS_MAROM_EXTRAS(p.category?.name) &&
+                      <div className="mt-2 space-y-2">
+                        <Select value={p.helmetAdapterSigned||''} onChange={e=>setPicked(x=>x.map(i=>i.id===p.id?{...i,helmetAdapterSigned:e.target.value}:i))}>
+                          <option value="">— חתימה בנוסף על מתאם לקסדה —</option>
+                          <option value="yes">כן</option>
+                          <option value="no">לא</option>
+                        </Select>
+                        <Select value={p.cameraBagSigned||''} onChange={e=>setPicked(x=>x.map(i=>i.id===p.id?{...i,cameraBagSigned:e.target.value}:i))}>
+                          <option value="">— חתימה בנוסף על תיק למצלמה —</option>
+                          <option value="yes">כן</option>
+                          <option value="no">לא</option>
+                        </Select>
+                      </div>}
                   </li>
                 ))}
               </ul>}
@@ -1632,7 +1687,7 @@ function Returns(){
   const load = useCallback(async ()=>{
     setRows(null);
     const {data} = await sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name,serial_number))')
+      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name,serial_number))')
       .in('status',['active','overdue']).order('expected_return_date');
     setRows(data||[]);
   },[]);
@@ -1717,7 +1772,7 @@ function Employees(){
   useEffect(()=>{ loadRows(); },[loadRows]);
   const openHistory = async emp => {
     setSel(emp); setSelHistory(null);
-    const {data} = await sb.from('borrows').select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name))').eq('personal_number',emp.personal_number).order('checkout_date',{ascending:false});
+    const {data} = await sb.from('borrows').select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name))').eq('personal_number',emp.personal_number).order('checkout_date',{ascending:false});
     setSelHistory(data||[]);
   };
   const filtered = useMemo(()=>{
@@ -1800,7 +1855,7 @@ function Soldiers(){
   const openDetail = async person => {
     setDetail(person); setDetailBorrows(null); setEditing(false);
     const {data} = await sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name))')
+      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name))')
       .eq('personal_number',person.personal_number).order('checkout_date',{ascending:false});
     setDetailBorrows(data||[]);
   };
@@ -2234,7 +2289,7 @@ function MyBorrows(){
   useEffect(()=>{
     if(!profile?.personal_number) return;
     sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, equipment:equipment_id(name))')
+      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name))')
       .eq('personal_number',profile.personal_number)
       .order('checkout_date',{ascending:false})
       .then(({data})=>setRows(data||[]));
