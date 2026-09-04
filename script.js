@@ -1040,7 +1040,7 @@ function EquipmentForm({item,categories,onSaved,onClose}){
     </div>
   );
 }
-function EquipmentDetail({item,history,isAdmin,onToggleArchive,onClose}){
+function EquipmentDetail({item,history,isAdmin,onToggleArchive,onClose,onSelectBorrow}){
   const borrowedNow = Math.max(0,(item.quantity??0)-(item.available_quantity??0));
   const none = (item.available_quantity??0)<=0;
   return (
@@ -1074,7 +1074,7 @@ function EquipmentDetail({item,history,isAdmin,onToggleArchive,onClose}){
         {history===null ? <Spinner/> : history.length===0
           ? <p className="py-4 text-center text-sm text-slate-500">אין תיעוד עדיין</p>
           : <ul className="max-h-48 space-y-1.5 overflow-y-auto text-sm">
-              {history.map(h=><li key={h.id} className="flex justify-between rounded-xl bg-white/5 px-3 py-2 text-slate-200">
+              {history.map(h=><li key={h.id} onClick={()=>onSelectBorrow && h.borrow && onSelectBorrow(h.borrow)} className="flex cursor-pointer justify-between rounded-xl bg-white/5 px-3 py-2 text-slate-200 transition hover:bg-white/10">
                 <span>{({INSERT:'נוצר',UPDATE:'עודכן',DELETE:'נמחק'}[h.action]||h.action)} · {h.actor_name||'—'}</span>
                 <span className="num text-xs text-slate-500">{fmtDT(h.created_at)}</span></li>)}
             </ul>}
@@ -1149,6 +1149,7 @@ function Equipment({initialFilter}){
   const [showArchived,setShowArchived] = useState(false);
   const [editing,setEditing] = useState(null);
   const [detail,setDetail] = useState(null); const [hist,setHist] = useState(null);
+  const [selBorrow,setSelBorrow] = useState(null);
   const [catMgrOpen,setCatMgrOpen] = useState(false);
   const importRef = useRef();
   const load = useCallback(async ()=>{
@@ -1165,12 +1166,14 @@ function Equipment({initialFilter}){
     // דרך borrow_items.equipment_id -> equipment.id ו-borrow_items.borrow_id -> borrows.id.
     // audit_log (entity_type='borrows', entity_id=borrows.id) לא נדרש כרגע כי borrows כבר
     // כולל את status/full_name/created_at, אבל אפשר לצרף בעתיד אם יידרש.
-    const {data} = await sb.from('borrow_items').select('id, borrows:borrow_id(id, full_name, status, created_at)').eq('equipment_id', item.id);
+    // borrows:borrow_id(*, borrow_items(...)) — אותו מבנה embed שכבר עובד ב-Employees.openHistory,
+    // כדי ש-BorrowDetail יקבל את אותו אובייקט מלא שהוא כבר מקבל בכל מקום אחר במערכת.
+    const {data} = await sb.from('borrow_items').select('id, borrows:borrow_id(*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name,serial_number)))').eq('equipment_id', item.id);
     const list = (data||[])
       .map(bi=>bi.borrows)
       .filter(Boolean)
       .sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''))
-      .map(b=>({id:b.id, action:BORROW_STATUS[b.status]?.he||b.status, actor_name:b.full_name, created_at:b.created_at}));
+      .map(b=>({id:b.id, action:BORROW_STATUS[b.status]?.he||b.status, actor_name:b.full_name, created_at:b.created_at, borrow:b}));
     setHist(list);
   };
   const del = async item => {
@@ -1315,7 +1318,10 @@ function Equipment({initialFilter}){
           }}/>}
       </Modal>
       <Modal open={!!detail} onClose={()=>setDetail(null)} wide title="פרטי ציוד">
-        {detail && <EquipmentDetail item={detail} history={hist} isAdmin={isAdmin} onToggleArchive={toggleArchive} onClose={()=>setDetail(null)}/>}
+        {detail && <EquipmentDetail item={detail} history={hist} isAdmin={isAdmin} onToggleArchive={toggleArchive} onClose={()=>setDetail(null)} onSelectBorrow={setSelBorrow}/>}
+      </Modal>
+      <Modal open={!!selBorrow} onClose={()=>setSelBorrow(null)} wide title="פרטי השאלה">
+        {selBorrow && <BorrowDetail borrow={selBorrow} onClose={()=>setSelBorrow(null)} onReturned={()=>{setSelBorrow(null); if(detail) openDetail(detail);}}/>}
       </Modal>
       <Modal open={catMgrOpen} onClose={()=>setCatMgrOpen(false)} title="ניהול קטגוריות">
         {catMgrOpen && <CategoryManager categories={cats} onClose={()=>setCatMgrOpen(false)} onChanged={load}/>}
