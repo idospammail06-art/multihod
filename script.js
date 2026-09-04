@@ -1161,8 +1161,17 @@ function Equipment({initialFilter}){
   useEffect(()=>{load();},[load]);
   const openDetail = async item => {
     setDetail(item); setHist(null);
-    const {data} = await sb.from('audit_log').select('*').eq('entity_type','equipment').eq('entity_id',item.id).order('created_at',{ascending:false}).limit(20);
-    setHist(data||[]);
+    // היסטוריית פריט = היסטוריית ההשאלות בפועל של הציוד (כולל כאלה שהוחזרו),
+    // דרך borrow_items.equipment_id -> equipment.id ו-borrow_items.borrow_id -> borrows.id.
+    // audit_log (entity_type='borrows', entity_id=borrows.id) לא נדרש כרגע כי borrows כבר
+    // כולל את status/full_name/created_at, אבל אפשר לצרף בעתיד אם יידרש.
+    const {data} = await sb.from('borrow_items').select('id, borrows:borrow_id(id, full_name, status, created_at)').eq('equipment_id', item.id);
+    const list = (data||[])
+      .map(bi=>bi.borrows)
+      .filter(Boolean)
+      .sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''))
+      .map(b=>({id:b.id, action:BORROW_STATUS[b.status]?.he||b.status, actor_name:b.full_name, created_at:b.created_at}));
+    setHist(list);
   };
   const del = async item => {
     if(!confirm(`למחוק לצמיתות את "${item.name}"? פעולה זו אינה הפיכה.`)) return;
