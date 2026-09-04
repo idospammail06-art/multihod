@@ -2125,19 +2125,49 @@ function Users(){
 }
 
 /* =====================================================================
-   NOTIFICATION BELL (overdue alerts)
+   NOTIFICATION BELL (overdue / pending approval / recently returned)
    ===================================================================== */
+const NOTIF_KIND = {
+  overdue:  {icon:'🔴', cls:'text-rose-300'},
+  pending:  {icon:'🟠', cls:'text-amber-300'},
+  returned: {icon:'🟢', cls:'text-emerald-300'},
+};
 function NotifBell({go}){
   const [open,setOpen] = useState(false);
   const [rows,setRows] = useState([]);
   const [selBorrow,setSelBorrow] = useState(null);
   const load = useCallback(async ()=>{
-    const {data} = await sb.from('borrows').select('id,full_name,expected_return_date,expected_return_time,status,approved')
-      .eq('approved',true).neq('status','returned').neq('status','cancelled');
-    setRows((data||[]).filter(isBorrowOverdue).sort((a,b)=>(a.expected_return_date||'').localeCompare(b.expected_return_date||'')).slice(0,10));
+    // 12h window for "recently returned": computed fresh on every load() call
+    // (including the existing 60s poll below), so a notification simply stops
+    // matching the .gte() filter once actual_return_at falls outside the window —
+    // no extra timer/mechanism needed.
+    const cutoff = new Date(Date.now()-12*3600*1000).toISOString();
+    const [ov,pd,rt] = await Promise.all([
+      sb.from('borrows').select('id,full_name,expected_return_date,expected_return_time,status,approved')
+        .eq('approved',true).neq('status','returned').neq('status','cancelled'),
+      sb.from('borrows').select('id,full_name,created_at,approved,status')
+        .eq('approved',false).neq('status','cancelled'),
+      sb.from('borrows').select('id,full_name,actual_return_at,status')
+        .eq('status','returned').gte('actual_return_at',cutoff),
+    ]);
+    const overdue = (ov.data||[]).filter(isBorrowOverdue)
+      .sort((a,b)=>(a.expected_return_date||'').localeCompare(b.expected_return_date||''))
+      .map(r=>({...r,kind:'overdue'}));
+    const pending = (pd.data||[])
+      .sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''))
+      .map(r=>({...r,kind:'pending'}));
+    const returned = (rt.data||[])
+      .sort((a,b)=>(b.actual_return_at||'').localeCompare(a.actual_return_at||''))
+      .map(r=>({...r,kind:'returned'}));
+    setRows([...overdue,...pending,...returned].slice(0,20));
   },[]);
   useEffect(()=>{ load(); const t=setInterval(load,60000); return ()=>clearInterval(t); },[load]);
   const openBorrow = async id => { setOpen(false); const data = await fetchBorrowFull(id); if(data) setSelBorrow(data); };
+  const notifLine = r => {
+    if(r.kind==='overdue') return `איחור מ-${fmtDate(r.expected_return_date)} ${r.expected_return_time?.slice(0,5)||''}`;
+    if(r.kind==='pending') return `ממתין לאישור · ${fmtDT(r.created_at)}`;
+    return `הוחזר · ${fmtDT(r.actual_return_at)}`;
+  };
   return (
     <div className="relative">
       <button onClick={()=>setOpen(o=>!o)} className="relative rounded-xl p-2 text-slate-300 transition hover:bg-white/10 hover:text-white">
@@ -2146,13 +2176,13 @@ function NotifBell({go}){
       </button>
       {open && (
         <div className="pop glass-modal absolute left-0 top-full z-40 mt-2 w-72 p-2" onMouseLeave={()=>setOpen(false)}>
-          <div className="px-2 py-1.5 text-xs font-semibold text-slate-400">השאלות באיחור</div>
+          <div className="px-2 py-1.5 text-xs font-semibold text-slate-400">התראות</div>
           {rows.length===0 ? <p className="px-2 py-3 text-sm text-slate-500">אין התראות כרגע</p> :
             <ul className="max-h-64 space-y-1 overflow-y-auto">
               {rows.map(r=>(
-                <li key={r.id} onClick={()=>openBorrow(r.id)} className="cursor-pointer rounded-xl px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/5">
-                  <div className="font-medium">{r.full_name}</div>
-                  <div className="num text-xs text-rose-300">איחור מ-{fmtDate(r.expected_return_date)} {r.expected_return_time?.slice(0,5)||''}</div>
+                <li key={`${r.kind}-${r.id}`} onClick={()=>openBorrow(r.id)} className="cursor-pointer rounded-xl px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/5">
+                  <div className="font-medium">{NOTIF_KIND[r.kind].icon} {r.full_name}</div>
+                  <div className={cx('num text-xs',NOTIF_KIND[r.kind].cls)}>{notifLine(r)}</div>
                 </li>
               ))}
             </ul>}
