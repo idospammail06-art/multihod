@@ -2128,9 +2128,9 @@ function Users(){
    NOTIFICATION BELL (overdue / pending approval / recently returned)
    ===================================================================== */
 const NOTIF_KIND = {
-  overdue:  {icon:'🔴', cls:'text-rose-300'},
-  pending:  {icon:'🟠', cls:'text-amber-300'},
-  returned: {icon:'🟢', cls:'text-emerald-300'},
+  overdue:  {label:'השאלות באיחור', rowCls:'border border-rose-400/30 bg-rose-400/10 hover:bg-rose-400/15', metaCls:'text-rose-300'},
+  pending:  {label:'ממתינות לאישור', rowCls:'border border-amber-400/30 bg-amber-400/10 hover:bg-amber-400/15', metaCls:'text-amber-300'},
+  returned: {label:'הוחזר לאחרונה', rowCls:'border border-emerald-400/30 bg-emerald-400/10 hover:bg-emerald-400/15', metaCls:'text-emerald-300'},
 };
 function NotifBell({go}){
   const [open,setOpen] = useState(false);
@@ -2178,14 +2178,26 @@ function NotifBell({go}){
         <div className="pop glass-modal absolute left-0 top-full z-40 mt-2 w-72 p-2" onMouseLeave={()=>setOpen(false)}>
           <div className="px-2 py-1.5 text-xs font-semibold text-slate-400">התראות</div>
           {rows.length===0 ? <p className="px-2 py-3 text-sm text-slate-500">אין התראות כרגע</p> :
-            <ul className="max-h-64 space-y-1 overflow-y-auto">
-              {rows.map(r=>(
-                <li key={`${r.kind}-${r.id}`} onClick={()=>openBorrow(r.id)} className="cursor-pointer rounded-xl px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/5">
-                  <div className="font-medium">{NOTIF_KIND[r.kind].icon} {r.full_name}</div>
-                  <div className={cx('num text-xs',NOTIF_KIND[r.kind].cls)}>{notifLine(r)}</div>
-                </li>
-              ))}
-            </ul>}
+            <div className="max-h-64 space-y-2.5 overflow-y-auto">
+              {['overdue','pending','returned'].map(kind=>{
+                const group = rows.filter(r=>r.kind===kind);
+                if(!group.length) return null;
+                const meta = NOTIF_KIND[kind];
+                return (
+                  <div key={kind}>
+                    <div className="px-2 pb-1 text-[11px] font-semibold text-slate-500">{meta.label}</div>
+                    <ul className="space-y-1">
+                      {group.map(r=>(
+                        <li key={`${r.kind}-${r.id}`} onClick={()=>openBorrow(r.id)} className={cx('cursor-pointer rounded-xl px-2.5 py-2 text-sm text-slate-100 transition',meta.rowCls)}>
+                          <div className="font-medium">{r.full_name}</div>
+                          <div className={cx('num text-xs',meta.metaCls)}>{notifLine(r)}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>}
         </div>
       )}
       <Modal open={!!selBorrow} onClose={()=>setSelBorrow(null)} wide title="פרטי השאלה">
