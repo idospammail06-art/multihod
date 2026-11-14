@@ -557,9 +557,16 @@ const fetchBorrowFull = async id => {
    Used by the admin borrow flow so that every loan an admin records belongs
    to a real row in `profiles`. The insert payload mirrors Register() exactly
    (same columns, role:'user'), so both paths produce identical profiles.
-   Duplicate-safe: with the UNIQUE index on profiles.personal_number (see
-   sql/fix-admin-borrow-profile.sql), a concurrent insert fails with 23505 and
-   we simply re-read the row the other request created. */
+   Duplicate-safe: with the UNIQUE constraint on profiles.personal_number
+   (profiles_personal_number_key), a concurrent insert fails with 23505 and
+   we simply re-read the row the other request created.
+   Identity check: if the number already belongs to a profile whose name differs
+   from the name typed in the form, nothing is used automatically — the caller
+   gets {conflict, profile} and must ask the admin. Only after explicit
+   confirmation is it called again with acceptProfileId = that profile's id. */
+// Name comparison ignores case, extra spaces and the different Hebrew/ASCII quote marks only.
+const normName = s => String(s||'').normalize('NFC').replace(/[״“”]/g,'"').replace(/[׳‘’`]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
+const sameName = (a,b) => normName(a) === normName(b);
 const splitFullName = full => {
   const parts = String(full||'').trim().split(/\s+/).filter(Boolean);
   return { first_name: parts[0]||'', last_name: parts.slice(1).join(' ') };
@@ -568,12 +575,16 @@ const findProfileByPN = async pn => {
   const {data,error} = await sb.from('profiles').select('*').eq('personal_number',pn).limit(1);
   return { data: (data && data[0]) || null, error };
 };
-async function ensureProfile({personal_number, full_name, unit, phone}){
+async function ensureProfile({personal_number, full_name, unit, phone, acceptProfileId=null}){
   const pn = String(personal_number||'').trim();
   if(!pn) return { error:{message:'חסר מספר אישי'} };
+  // Existing profile: use it only if the name matches, or the admin already confirmed this exact profile.
+  const useExisting = p => (sameName(p.full_name, full_name) || (acceptProfileId && p.id === acceptProfileId))
+    ? { profile:p, created:false }
+    : { conflict:true, profile:p };
   const found = await findProfileByPN(pn);
   if(found.error) return { error:found.error };
-  if(found.data) return { profile:found.data, created:false };
+  if(found.data) return useExisting(found.data);
   // Same rule as the personal-number login gate, applied only to NEW profiles
   if(!/^\d{7}$/.test(pn)) return { error:{message:'מספר אישי של חייל חדש חייב להכיל 7 ספרות בדיוק'} };
   const name = String(full_name||'').trim();
@@ -581,12 +592,12 @@ async function ensureProfile({personal_number, full_name, unit, phone}){
   const {first_name,last_name} = splitFullName(name);
   const {data,error} = await sb.from('profiles').insert({
     full_name:name, first_name, last_name, personal_number:pn,
-    phone: String(phone||'').trim()||null, unit: String(unit||'').trim()||null, role:'user',
+    phone: String(phone||'').trim()||null, unit: String(unit||'').trim(), role:'user', // unit: '' (not NULL) when empty
   }).select().single();
   if(!error && data) return { profile:data, created:true };
-  if(error && error.code==='23505'){ // created in parallel by another request
+  if(error && error.code==='23505'){ // created in parallel by another request — same identity check applies
     const again = await findProfileByPN(pn);
-    if(again.data) return { profile:again.data, created:false };
+    if(again.data) return useExisting(again.data);
   }
   return { error: error || {message:'יצירת הפרופיל נכשלה'} };
 }
@@ -1476,6 +1487,7 @@ function Borrow({onDone,employeeMode}){
   const [sig,setSig] = useState(null); const [agree,setAgree] = useState(false);
   const [busy,setBusy] = useState(false); const [done,setDone] = useState(null);
   const [lookupPn,setLookupPn] = useState(''); const [lookupBusy,setLookupBusy] = useState(false);
+  const [nameConflict,setNameConflict] = useState(null); // existing profile whose name differs from the form
   const set = (k,v)=>setF(x=>({...x,[k]:v}));
   useEffect(()=>{ db.available().then(({data})=>setAvail(data||[])); },[]);
   // מנהל בלבד (employeeMode===false) — חיפוש קריאה-בלבד מול profiles, למילוי אוטומטי
@@ -1509,7 +1521,9 @@ function Borrow({onDone,employeeMode}){
     return avail.filter(a=>!picked.find(p=>p.id===a.id) &&
       (!t || (a.name||'').toLowerCase().includes(t))).slice(0,8);
   },[avail,q,picked]);
-  const submit = async () => {
+  // acceptProfileId is set only from the identity-confirmation dialog below.
+  const submit = () => runSubmit(null);
+  const runSubmit = async (acceptProfileId) => {
     if(!f.full_name.trim()) return toast('שם מלא הוא שדה חובה','error');
     if(!f.expected_return_date) return toast('נא לבחור תאריך החזרה','error');
     if(picked.length===0) return toast('נא לבחור לפחות פריט אחד','error');
@@ -1528,8 +1542,10 @@ function Borrow({onDone,employeeMode}){
     // מסלול ההחתמה העצמית לא עובר כאן — המשתמש כבר מחובר עם פרופיל קיים.
     let borrowerPN = f.personal_number || null;
     if(!employeeMode){
-      const res = await ensureProfile({personal_number:f.personal_number, full_name:f.full_name, unit:f.unit, phone:f.phone});
+      const res = await ensureProfile({personal_number:f.personal_number, full_name:f.full_name, unit:f.unit, phone:f.phone, acceptProfileId});
       if(res.error){ setBusy(false); return toast('שגיאה ביצירת פרופיל החייל: '+rpcErrorText(res.error),'error'); }
+      // Number belongs to someone saved under a different name: stop here (no loan) and ask the admin.
+      if(res.conflict){ setBusy(false); setNameConflict(res.profile); return; }
       borrowerPN = res.profile.personal_number;
       if(res.created) toast('נוצר פרופיל חדש לחייל','success');
     }
@@ -1691,6 +1707,23 @@ function Borrow({onDone,employeeMode}){
         </div>
         <Btn variant="brass" className="w-full py-3" onClick={submit} disabled={busy}>{busy?'רושם…':'אישור השאלה וחתימה'}</Btn>
       </div>
+      <Modal open={!!nameConflict} onClose={()=>setNameConflict(null)} title="אימות זהות החייל">
+        {nameConflict && (
+          <div className="space-y-4 text-sm">
+            <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-amber-100">
+              המספר האישי <span dir="ltr" className="num font-semibold">{nameConflict.personal_number}</span> כבר שייך במערכת לחייל אחר בשם:
+              <div className="mt-1 text-base font-bold text-white">{nameConflict.full_name||'—'}</div>
+              {nameConflict.unit && <div className="text-xs text-amber-200/80">{nameConflict.unit}</div>}
+            </div>
+            <p className="text-slate-300">בטופס הוזן השם: <span className="font-semibold text-white">{f.full_name}</span></p>
+            <p className="text-xs text-slate-400">אם המספר הוקלד בטעות — בטל/י ותקן/י אותו. אם זה אותו חייל, ההשאלה תירשם בפרופיל הקיים שלו ופרטי הפרופיל לא ישתנו.</p>
+            <div className="flex justify-end gap-2">
+              <Btn variant="ghost" onClick={()=>setNameConflict(null)}>ביטול — לא לרשום השאלה</Btn>
+              <Btn variant="brass" onClick={()=>{ const id = nameConflict.id; setNameConflict(null); runSubmit(id); }}>זה אותו חייל — המשך</Btn>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
