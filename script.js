@@ -218,6 +218,24 @@ const waLink = (phone) => {
   else if(!digits.startsWith('972')) digits = '972' + digits;
   return `https://wa.me/${digits}`;
 };
+/* ===== WhatsApp share of one loan =====
+   Line 1: full name, personal number, phone (as stored — strings, leading zeros kept).
+   Then one line per equipment item OF THIS LOAN ONLY (borrow.borrow_items, already
+   loaded with the loan by every screen that opens BorrowDetail — no extra query).
+   Empty / missing values are skipped, never printed as "null"/"undefined". */
+const shareVal = v => { const s = v==null ? '' : String(v).trim(); return /^(null|undefined)$/i.test(s) ? '' : s; };
+const buildBorrowShare = borrow => {
+  const name = shareVal(borrow?.full_name), pn = shareVal(borrow?.personal_number), phone = shareVal(borrow?.phone);
+  const items = (borrow?.borrow_items||[])
+    .map(i => { const n = shareVal(i?.equipment?.name); if(!n) return ''; const q = Number(i.quantity)||1; return q>1 ? `${n} ×${q}` : n; })
+    .filter(Boolean);
+  const header = [name, pn, phone].filter(Boolean).join(' ');
+  return { text: [header, ...items].filter(Boolean).join('\n'), hasPhone: !!phone, itemCount: items.length };
+};
+// wa.me/?text= opens WhatsApp (app on phone, WhatsApp Web/Desktop on computer) with the text
+// ready and lets the user pick the recipient and press send — nothing is sent automatically.
+const waShareUrl = text => `https://wa.me/?text=${encodeURIComponent(text)}`;
+const IconChat = p => <I {...p} d={<><path d="M21 11.5a8.4 8.4 0 0 1-12.3 7.5L3 21l2-5.4A8.4 8.4 0 1 1 21 11.5Z"/><path d="M9.5 8.8c.3 1.8 2 3.9 4.2 4.6l1-1 1.6.8-.4 1.4c-3 .2-6.6-3-6.9-6l1.4-.5.7 1.6Z"/></>} />;
 const PhoneLink = ({phone,className}) => {
   const href = waLink(phone);
   if(!href) return <>—</>;
@@ -823,6 +841,12 @@ function BorrowDetail({borrow,onClose,onApproved,onRejected,canApprove,onReturne
   const returnPhotoUrls = (borrow.return_photos||[]).map(p=>sb.storage.from('return-photos').getPublicUrl(p).data.publicUrl);
   const isReturned = borrow.status==='returned' || !!borrow.actual_return_at;
   const canReturn = !!borrow.approved && borrow.status!=='returned' && borrow.status!=='cancelled';
+  const shareWhatsApp = () => {
+    const s = buildBorrowShare(borrow);
+    if(s.itemCount===0) return toast('אין פריטי ציוד בהשאלה זו — אין מה לשתף','error');
+    if(!s.hasPhone) toast('לחייל אין מספר טלפון — ההודעה תישלח בלי טלפון','info');
+    window.open(waShareUrl(s.text), '_blank', 'noopener,noreferrer');
+  };
   const approve = async () => {
     setBusy(true);
     const {error} = await sb.rpc('approve_borrow',{p_borrow_id:borrow.id, p_approved_by:profile?.full_name||'מנהל'});
@@ -890,7 +914,10 @@ function BorrowDetail({borrow,onClose,onApproved,onRejected,canApprove,onReturne
             </div>}
         </div>}
 
-      <div className="flex justify-end gap-2 pt-1">
+      <div className="flex flex-wrap justify-end gap-2 pt-1">
+        <Btn variant="outline" onClick={shareWhatsApp} className="border-emerald-400/40 text-emerald-200 hover:bg-emerald-400/10" title="פותח את WhatsApp עם ההודעה מוכנה — הנמען והשליחה בידיים שלך">
+          <IconChat size={16} className="text-emerald-300"/> שתף בוואטסאפ
+        </Btn>
         <Btn variant="ghost" onClick={onClose}>סגירה</Btn>
         {canReturn &&
           <Btn variant="brass" onClick={()=>setReturning(true)}><IconIn size={16}/> קליטת החזרה</Btn>}
