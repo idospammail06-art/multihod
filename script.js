@@ -553,6 +553,84 @@ const fetchBorrowFull = async id => {
   return data;
 };
 
+/* ===== soldier profile: find-or-create by personal number =====
+   Used by the admin borrow flow so that every loan an admin records belongs
+   to a real row in `profiles`. The insert payload mirrors Register() exactly
+   (same columns, role:'user'), so both paths produce identical profiles.
+   Duplicate-safe: with the UNIQUE index on profiles.personal_number (see
+   sql/fix-admin-borrow-profile.sql), a concurrent insert fails with 23505 and
+   we simply re-read the row the other request created. */
+const splitFullName = full => {
+  const parts = String(full||'').trim().split(/\s+/).filter(Boolean);
+  return { first_name: parts[0]||'', last_name: parts.slice(1).join(' ') };
+};
+const findProfileByPN = async pn => {
+  const {data,error} = await sb.from('profiles').select('*').eq('personal_number',pn).limit(1);
+  return { data: (data && data[0]) || null, error };
+};
+async function ensureProfile({personal_number, full_name, unit, phone}){
+  const pn = String(personal_number||'').trim();
+  if(!pn) return { error:{message:'חסר מספר אישי'} };
+  const found = await findProfileByPN(pn);
+  if(found.error) return { error:found.error };
+  if(found.data) return { profile:found.data, created:false };
+  // Same rule as the personal-number login gate, applied only to NEW profiles
+  if(!/^\d{7}$/.test(pn)) return { error:{message:'מספר אישי של חייל חדש חייב להכיל 7 ספרות בדיוק'} };
+  const name = String(full_name||'').trim();
+  if(!name) return { error:{message:'נא למלא שם מלא'} };
+  const {first_name,last_name} = splitFullName(name);
+  const {data,error} = await sb.from('profiles').insert({
+    full_name:name, first_name, last_name, personal_number:pn,
+    phone: String(phone||'').trim()||null, unit: String(unit||'').trim()||null, role:'user',
+  }).select().single();
+  if(!error && data) return { profile:data, created:true };
+  if(error && error.code==='23505'){ // created in parallel by another request
+    const again = await findProfileByPN(pn);
+    if(again.data) return { profile:again.data, created:false };
+  }
+  return { error: error || {message:'יצירת הפרופיל נכשלה'} };
+}
+
+/* ===== soldier history: one source for every screen that shows a soldier's loans =====
+   A loan belongs to a soldier if borrows.profile_id = profile.id (set by the DB
+   trigger, see sql/soldier-history.sql) OR — for rows not linked yet — its
+   personal_number equals the soldier's. A row linked to a DIFFERENT profile is
+   never shown, even if the number matches (protects against a reused number).
+   Two plain queries + client merge, so it works before the SQL is run (the
+   profile_id query just returns nothing) and in demo mode.
+   Returns / damage / photos live on the borrows row itself; borrow_items and
+   audit_log hang off borrows.id — so linking borrows links all of them. */
+const BORROW_HISTORY_COLS = '*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name,serial_number))';
+const belongsToSoldier = (b, pid, pn) =>
+  (pid && b.profile_id === pid) || (!b.profile_id && pn && String(b.personal_number||'').trim() === pn);
+async function fetchSoldierBorrows(person){
+  const pid = person?.id || null;
+  const pn = String(person?.personal_number||'').trim();
+  const none = Promise.resolve({data:[]});
+  const [byId, byPn] = await Promise.all([
+    pid ? sb.from('borrows').select(BORROW_HISTORY_COLS).eq('profile_id',pid) : none,
+    pn  ? sb.from('borrows').select(BORROW_HISTORY_COLS).eq('personal_number',pn) : none,
+  ]);
+  const seen = new Set(), out = [];
+  [...(byId.data||[]), ...(byPn.data||[])].forEach(b=>{
+    if(seen.has(b.id) || !belongsToSoldier(b,pid,pn)) return;
+    seen.add(b.id); out.push(b);
+  });
+  return out.sort((a,b)=>(b.checkout_date||'').localeCompare(a.checkout_date||'') || (b.created_at||'').localeCompare(a.created_at||''));
+}
+// Existing audit_log rows for this soldier: everything logged on their loans
+// (BORROW / APPROVE / REJECT / EXTEND / RETURN …) plus edits to the profile itself.
+async function fetchSoldierAudit(person, borrows){
+  const ids = (borrows||[]).map(b=>b.id);
+  const reqs = [];
+  for(let i=0;i<ids.length;i+=100) reqs.push(sb.from('audit_log').select('*').eq('entity_type','borrows').in('entity_id',ids.slice(i,i+100)));
+  if(person?.id) reqs.push(sb.from('audit_log').select('*').eq('entity_type','profiles').eq('entity_id',person.id));
+  const res = await Promise.all(reqs);
+  return res.flatMap(r=>r.data||[]).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+}
+const AUDIT_ACTION_HE = {INSERT:'הוספה',UPDATE:'עדכון',DELETE:'מחיקה',BORROW:'השאלה',RETURN:'החזרה',EXTEND:'הארכה',APPROVE:'אישור',REJECT:'דחייה'};
+const AUDIT_ENTITY_HE = {equipment:'ציוד',borrows:'השאלה',maintenance:'טיפול',profiles:'פרטי חייל'};
+
 /* =====================================================================
    LOGIN — personal number gate, with inline self-registration
    ===================================================================== */
@@ -1401,14 +1479,18 @@ function Borrow({onDone,employeeMode}){
   const set = (k,v)=>setF(x=>({...x,[k]:v}));
   useEffect(()=>{ db.available().then(({data})=>setAvail(data||[])); },[]);
   // מנהל בלבד (employeeMode===false) — חיפוש קריאה-בלבד מול profiles, למילוי אוטומטי
-  // של פרטי המשאיל. לא יוצר משתמש, לא נוגע בטבלאות/RPC/הרשאות.
+  // של פרטי המשאיל. החיפוש עצמו לא יוצר משתמש: אם החייל לא קיים, הפרופיל נוצר
+  // רק בעת אישור ההשאלה (ensureProfile ב-submit), כדי שחיפוש שננטש לא ישאיר פרופיל ריק.
   const lookupSoldier = async () => {
     const pn = lookupPn.trim();
     if(!pn) return toast('נא להזין מספר אישי לחיפוש','error');
     setLookupBusy(true);
-    const {data} = await sb.from('profiles').select('*').eq('personal_number',pn).single();
+    const {data} = await findProfileByPN(pn);
     setLookupBusy(false);
-    if(!data) return toast('לא נמצא משתמש עם מספר אישי זה','error');
+    if(!data){
+      setF(x=>({...x, full_name:'', personal_number:pn, unit:'', phone:''}));
+      return toast('חייל חדש — מלא/י את פרטיו, והפרופיל ייווצר בעת אישור ההשאלה','info');
+    }
     setF(x=>({...x, full_name:data.full_name||'', personal_number:data.personal_number||'', unit:data.unit||'', phone:data.phone||''}));
     toast('פרטי החייל מולאו אוטומטית','success');
   };
@@ -1440,7 +1522,17 @@ function Borrow({onDone,employeeMode}){
     if(missingExtra) return toast(`נא למלא חתימה על מתאם לקסדה ותיק למצלמה עבור ${missingExtra.name}`,'error');
     if(!agree) return toast('נא לאשר את ההצהרה','error');
     if(!sig) return toast('נדרשת חתימה','error');
+    if(!employeeMode && !(f.personal_number||'').trim()) return toast('נא להזין מספר אישי של החייל','error');
     setBusy(true);
+    // מסלול מנהל: לוודא שלחייל יש פרופיל אמיתי לפני רישום ההשאלה (יוצר רק אם חסר).
+    // מסלול ההחתמה העצמית לא עובר כאן — המשתמש כבר מחובר עם פרופיל קיים.
+    let borrowerPN = f.personal_number || null;
+    if(!employeeMode){
+      const res = await ensureProfile({personal_number:f.personal_number, full_name:f.full_name, unit:f.unit, phone:f.phone});
+      if(res.error){ setBusy(false); return toast('שגיאה ביצירת פרופיל החייל: '+rpcErrorText(res.error),'error'); }
+      borrowerPN = res.profile.personal_number;
+      if(res.created) toast('נוצר פרופיל חדש לחייל','success');
+    }
     let sigPath = null;
     try {
       const blob = await (await fetch(sig)).blob();
@@ -1449,7 +1541,7 @@ function Borrow({onDone,employeeMode}){
       if(!se) sigPath = path;
     } catch(_) {}
     const {data,error} = await sb.rpc('create_borrow',{
-      p_full_name:f.full_name.trim(), p_personal_number:f.personal_number||null, p_unit:f.unit||null,
+      p_full_name:f.full_name.trim(), p_personal_number:borrowerPN, p_unit:f.unit||null,
       p_phone:f.phone||null, p_purpose:f.purpose||null,
       p_checkout_date:f.checkout_date, p_checkout_time:f.checkout_time||null,
       p_expected_return_date:f.expected_return_date, p_expected_return_time:f.expected_return_time||null,
@@ -1504,7 +1596,7 @@ function Borrow({onDone,employeeMode}){
               </div>
               <Btn variant="outline" onClick={lookupSoldier} disabled={lookupBusy}>{lookupBusy?'מחפש…':'חיפוש'}</Btn>
             </div>
-            <p className="mt-2 text-xs text-slate-500">מילוי אוטומטי של פרטי המשאיל/ה בטופס למטה. אפשר עדיין לערוך אותם ידנית אחרי החיפוש.</p>
+            <p className="mt-2 text-xs text-slate-500">מילוי אוטומטי של פרטי המשאיל/ה בטופס למטה. אם החייל לא קיים במערכת, ייווצר עבורו פרופיל בעת אישור ההשאלה.</p>
           </div>}
         <div className="card p-5">
           <h3 className="mb-4 font-bold text-white">פרטי המשאיל/ה</h3>
@@ -1767,17 +1859,62 @@ function Returns(){
 /* =====================================================================
    EMPLOYEES DIRECTORY
    ===================================================================== */
+/* Loan-history list shared by Employees() and Soldiers(): the same rows that
+   Employees already rendered, now also showing the actual return date. Clicking
+   a row opens the existing BorrowDetail (signature, items, return condition,
+   damage notes, return photos). */
+function BorrowHistoryList({rows,onOpen,empty='אין השאלות רשומות'}){
+  if(rows===null) return <Spinner/>;
+  if(rows.length===0) return <p className="py-6 text-center text-sm text-slate-500">{empty}</p>;
+  return (
+    <ul className="space-y-2">
+      {rows.map(b=>(
+        <li key={b.id} onClick={()=>onOpen&&onOpen(b)} className={cx('rounded-xl bg-white/5 p-3 text-sm transition', onOpen&&'cursor-pointer hover:bg-white/10')}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-slate-200">{b.borrow_items?.map(itemLabel).filter(Boolean).join(' · ')||'—'}</span>
+            <Badge map={BORROW_STATUS} value={isBorrowOverdue(b)?'overdue':b.status}/>
+          </div>
+          <div className="num mt-1 text-xs text-slate-500">
+            {fmtDate(b.checkout_date)} ← {fmtDate(b.expected_return_date)}
+            {b.actual_return_at && <span className="text-emerald-300/80"> · הוחזר {fmtDT(b.actual_return_at)}</span>}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+// Existing audit_log entries for one soldier, newest first (labels shared with AuditLog()).
+function SoldierActivity({rows}){
+  if(rows===null) return <Spinner/>;
+  if(rows.length===0) return <p className="py-4 text-center text-sm text-slate-500">אין פעולות מתועדות</p>;
+  return (
+    <ul className="divide-y divide-white/5 rounded-xl bg-white/5 text-sm">
+      {rows.map(r=>(
+        <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2">
+          <span className="text-slate-200">{AUDIT_ACTION_HE[r.action]||r.action} · <span className="text-slate-400">{AUDIT_ENTITY_HE[r.entity_type]||r.entity_type}</span></span>
+          <span className="text-xs text-slate-400">{r.actor_name||'—'}</span>
+          <span className="num shrink-0 text-xs text-slate-500">{fmtDT(r.created_at)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Employees(){
   const [rows,setRows] = useState(null);
   const [q,setQ] = useState('');
   const [sel,setSel] = useState(null); const [selHistory,setSelHistory] = useState(null);
   const [detail,setDetail] = useState(null);
   const loadRows = useCallback(async () => {
-    const {data} = await sb.from('borrows').select('full_name,personal_number,unit,phone,status,checkout_date').order('checkout_date',{ascending:false}).limit(500);
+    // select('*') so profile_id is included once the column exists (and nothing breaks before).
+    const {data} = await sb.from('borrows').select('*').order('checkout_date',{ascending:false}).limit(500);
     const map = {};
+    // Group by the linked profile first, so a soldier whose personal number was corrected
+    // still appears once; unlinked rows fall back to personal number, then name (as before).
     (data||[]).forEach(b=>{
-      const key = b.personal_number || b.full_name;
-      if(!map[key]) map[key] = {full_name:b.full_name, personal_number:b.personal_number, unit:b.unit, phone:b.phone, total:0, active:0, last:b.checkout_date};
+      const pn = String(b.personal_number||'').trim();
+      const key = b.profile_id ? 'id:'+b.profile_id : pn ? 'pn:'+pn : 'name:'+b.full_name;
+      if(!map[key]) map[key] = {full_name:b.full_name, personal_number:pn||b.personal_number, profile_id:b.profile_id||null, unit:b.unit, phone:b.phone, total:0, active:0, last:b.checkout_date};
       map[key].total++;
       if(b.status==='active'||b.status==='overdue') map[key].active++;
       if((b.checkout_date||'') > (map[key].last||'')) map[key].last = b.checkout_date;
@@ -1787,8 +1924,8 @@ function Employees(){
   useEffect(()=>{ loadRows(); },[loadRows]);
   const openHistory = async emp => {
     setSel(emp); setSelHistory(null);
-    const {data} = await sb.from('borrows').select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name))').eq('personal_number',emp.personal_number).order('checkout_date',{ascending:false});
-    setSelHistory(data||[]);
+    if(!emp.personal_number && !emp.profile_id){ setSelHistory([]); return; }
+    setSelHistory(await fetchSoldierBorrows({id:emp.profile_id, personal_number:emp.personal_number}));
   };
   const filtered = useMemo(()=>{
     if(!rows) return [];
@@ -1827,19 +1964,7 @@ function Employees(){
          </div>
        </div>}
       <Modal open={!!sel} onClose={()=>setSel(null)} wide title={sel?`היסטוריית השאלות · ${sel.full_name}`:''}>
-        {selHistory===null ? <Spinner/> : selHistory.length===0
-          ? <p className="py-6 text-center text-sm text-slate-500">אין השאלות רשומות</p>
-          : <ul className="space-y-2">
-              {selHistory.map(b=>(
-                <li key={b.id} onClick={()=>setDetail(b)} className="cursor-pointer rounded-xl bg-white/5 p-3 text-sm transition hover:bg-white/10">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-200">{b.borrow_items?.map(itemLabel).filter(Boolean).join(' · ')||'—'}</span>
-                    <Badge map={BORROW_STATUS} value={isBorrowOverdue(b)?'overdue':b.status}/>
-                  </div>
-                  <div className="num mt-1 text-xs text-slate-500">{fmtDate(b.checkout_date)} ← {fmtDate(b.expected_return_date)}</div>
-                </li>
-              ))}
-            </ul>}
+        <BorrowHistoryList rows={selHistory} onOpen={setDetail}/>
       </Modal>
       <Modal open={!!detail} onClose={()=>setDetail(null)} wide title="פרטי השאלה">
         {detail && <BorrowDetail borrow={detail} onClose={()=>setDetail(null)} onReturned={()=>{setDetail(null); loadRows(); if(sel) openHistory(sel);}}/>}
@@ -1859,20 +1984,28 @@ function Soldiers(){
   const [q,setQ] = useState('');
   const [detail,setDetail] = useState(null);
   const [detailBorrows,setDetailBorrows] = useState(null);
+  const [detailActivity,setDetailActivity] = useState(null);
+  const [borrowDetail,setBorrowDetail] = useState(null);
   const [editing,setEditing] = useState(false);
   const [form,setForm] = useState(null);
   const [saving,setSaving] = useState(false);
+  const {profile:me} = useAuth();
   const load = useCallback(async () => {
     const {data} = await sb.from('profiles').select('*').order('full_name');
     setRows(data||[]);
   },[]);
   useEffect(()=>{load();},[load]);
+  // Full history of the soldier: every loan linked to the profile or carrying its
+  // personal number (also loans made before the profile existed), + its audit trail.
+  const loadHistory = async person => {
+    setDetailBorrows(null); setDetailActivity(null);
+    const borrows = await fetchSoldierBorrows(person);
+    setDetailBorrows(borrows);
+    setDetailActivity(await fetchSoldierAudit(person, borrows));
+  };
   const openDetail = async person => {
-    setDetail(person); setDetailBorrows(null); setEditing(false);
-    const {data} = await sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name))')
-      .eq('personal_number',person.personal_number).order('checkout_date',{ascending:false});
-    setDetailBorrows(data||[]);
+    setDetail(person); setEditing(false);
+    await loadHistory(person);
   };
   const startEdit = () => {
     setForm({full_name:detail.full_name||'', personal_number:detail.personal_number||'', unit:detail.unit||'', phone:detail.phone||''});
@@ -1881,6 +2014,14 @@ function Soldiers(){
   const saveEdit = async () => {
     if(!form.full_name.trim()) return toast('שם מלא הוא שדה חובה','error');
     if(!form.personal_number.trim()) return toast('מספר אישי הוא שדה חובה','error');
+    const pnChanged = form.personal_number.trim() !== String(detail.personal_number||'').trim();
+    if(pnChanged){
+      if(!/^\d{7}$/.test(form.personal_number.trim())) return toast('מספר אישי חייב להכיל 7 ספרות בדיוק','error');
+      // Before the DB link exists (borrows.profile_id), history is found only by number —
+      // changing it would hide the soldier's past loans. Refuse instead of disconnecting.
+      if(detailBorrows && detailBorrows.length && !('profile_id' in detailBorrows[0]))
+        return toast('לא ניתן לשנות מספר אישי לפני הרצת עדכון מסד הנתונים (sql/soldier-history.sql) — ההיסטוריה תתנתק','error');
+    }
     setSaving(true);
     const {data,error} = await sb.from('profiles').update({
       full_name: form.full_name.trim(),
@@ -1889,11 +2030,15 @@ function Soldiers(){
       phone: form.phone.trim()||null,
     }).eq('id',detail.id).select().single();
     setSaving(false);
-    if(error) return toast('שגיאה בשמירה: '+rpcErrorText(error),'error');
+    if(error) return toast(error.code==='23505' ? 'המספר האישי הזה כבר שייך לחייל אחר במערכת' : 'שגיאה בשמירה: '+rpcErrorText(error),'error');
+    // Same audit mechanism the app already uses for equipment edits / rejections.
+    try{ await sb.from('audit_log').insert({action:'UPDATE',entity_type:'profiles',entity_id:detail.id,actor_name:me?.full_name||'מנהל'}); }catch(_){}
     toast('הפרטים נשמרו','success');
-    setDetail(d=>({...d,...data}));
+    const updated = {...detail,...data};
+    setDetail(updated);
     setRows(rs=>rs.map(r=>r.id===data.id?{...r,...data}:r));
     setEditing(false);
+    loadHistory(updated); // history follows the profile (profile_id), not the old/new number
   };
   const filtered = useMemo(()=>{
     if(!rows) return [];
@@ -1945,20 +2090,12 @@ function Soldiers(){
               </dl>
             )}
             <div>
-              <span className="mb-2 block text-xs text-slate-500">השאלות ({detailBorrows?detailBorrows.length:0})</span>
-              {detailBorrows===null ? <Spinner/> :
-                detailBorrows.length===0 ? <p className="py-4 text-center text-sm text-slate-500">0 השאלות — משתמש זה עדיין לא ביצע השאלה.</p> :
-                <ul className="space-y-1.5">
-                  {detailBorrows.map(b=>(
-                    <li key={b.id} className="rounded-xl bg-white/5 p-3 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-200">{b.borrow_items?.map(itemLabel).filter(Boolean).join(' · ')||'—'}</span>
-                        <Badge map={BORROW_STATUS} value={isBorrowOverdue(b)?'overdue':b.status}/>
-                      </div>
-                      <div className="num mt-1 text-xs text-slate-500">{fmtDate(b.checkout_date)} ← {fmtDate(b.expected_return_date)}</div>
-                    </li>
-                  ))}
-                </ul>}
+              <span className="mb-2 block text-xs text-slate-500">השאלות ({detailBorrows?detailBorrows.length:0}) · לחיצה על השאלה מציגה חתימה, פרטי החזרה ותמונות</span>
+              <BorrowHistoryList rows={detailBorrows} onOpen={setBorrowDetail} empty="0 השאלות — משתמש זה עדיין לא ביצע השאלה."/>
+            </div>
+            <div>
+              <span className="mb-2 block text-xs text-slate-500">יומן פעולות ({detailActivity?detailActivity.length:0})</span>
+              <SoldierActivity rows={detailActivity}/>
             </div>
             <div className="flex justify-end gap-2 pt-1">
               {editing ? <>
@@ -1972,6 +2109,9 @@ function Soldiers(){
           </div>
         )}
       </Modal>
+      <Modal open={!!borrowDetail} onClose={()=>setBorrowDetail(null)} wide title="פרטי השאלה">
+        {borrowDetail && <BorrowDetail borrow={borrowDetail} onClose={()=>setBorrowDetail(null)} onReturned={()=>{setBorrowDetail(null); if(detail) loadHistory(detail);}}/>}
+      </Modal>
     </div>
   );
 }
@@ -1983,8 +2123,8 @@ function AuditLog(){
   const [rows,setRows] = useState(null);
   useEffect(()=>{ sb.from('audit_log').select('*').order('created_at',{ascending:false}).limit(200).then(({data})=>setRows(data||[])); },[]);
   if(rows===null) return <TableSkeleton/>;
-  const A = a=>({INSERT:'הוספה',UPDATE:'עדכון',DELETE:'מחיקה',BORROW:'השאלה',RETURN:'החזרה',EXTEND:'הארכה',APPROVE:'אישור',REJECT:'דחייה'}[a]||a);
-  const E = e=>({equipment:'ציוד',borrows:'השאלה',maintenance:'טיפול'}[e]||e);
+  const A = a=>AUDIT_ACTION_HE[a]||a;
+  const E = e=>AUDIT_ENTITY_HE[e]||e;
   return (
     <div className="card overflow-hidden">
       <div className="overflow-x-auto">
@@ -2345,12 +2485,8 @@ function MyBorrows(){
   const [rows,setRows] = useState(null);
   useEffect(()=>{
     if(!profile?.personal_number) return;
-    sb.from('borrows')
-      .select('*, borrow_items(quantity, camera_number, camera_numbers, helmet_adapter_signed, camera_bag_signed, equipment:equipment_id(name))')
-      .eq('personal_number',profile.personal_number)
-      .order('checkout_date',{ascending:false})
-      .then(({data})=>setRows(data||[]));
-  },[profile?.personal_number]);
+    fetchSoldierBorrows(profile).then(setRows);
+  },[profile?.id, profile?.personal_number]);
   if(rows===null) return <ListSkeleton/>;
   if(rows.length===0) return <Empty icon={<IconClock size={48}/>} title="אין עדיין השאלות" sub="ברגע שתשלח/י טופס החתמה, הוא יופיע כאן."/>;
   return (
